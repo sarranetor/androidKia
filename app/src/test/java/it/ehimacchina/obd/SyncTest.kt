@@ -59,6 +59,17 @@ class EventsTest {
         assertTrue(gone.isNull("freeze"))
     }
 
+    @Test fun simulatedFlag() {
+        assertFalse(JSONObject(Events.snapshot(1, emptyMap(), null, null, null)).has("simulated"))
+        assertTrue(JSONObject(Events.snapshot(1, emptyMap(), null, null, null, simulated = true)).getBoolean("simulated"))
+        assertTrue(JSONObject(Events.trip(1, 2, 1.0, 0.1, 50.0, simulated = true)).getBoolean("simulated"))
+        assertTrue(JSONObject(Events.driveReport(1, 2, "x", simulated = true)).getBoolean("simulated"))
+        assertTrue(JSONObject(Events.status(1, "", emptyList(), 1.0, null, simulated = true)).getBoolean("simulated"))
+        val d = DtcEntity(code = "P0133", kind = "memorizzato", firstSeenMs = 1, lastSeenMs = 2, clearedMs = null, freeze = null, simulated = true)
+        assertTrue(JSONObject(Events.dtc(d)).getBoolean("simulated"))
+        assertFalse(JSONObject(Events.dtc(d.copy(simulated = false))).has("simulated"))
+    }
+
     @Test fun statusJson() {
         val diag = Diagnosis(true, 2, listOf("P0650"), emptyList(), 0, readiness = Readiness.parse(intArrayOf(0x82, 0x07, 0x61, 0x01)))
         val j = JSONObject(Events.status(5, "ELM327 v2.2", listOf(1, 4, 12), 1.1, diag))

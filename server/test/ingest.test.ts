@@ -13,6 +13,26 @@ test("snapshot valido: colonne dai PID", () => {
   assert.match(s.sql, /INSERT OR IGNORE INTO snapshots/);
   assert.deepEqual(s.params.slice(0, 11), [1000, 2100, 80, 88, 30, 45, 20, 12, 13.7, 4.2, 3.5]);
   assert.deepEqual(JSON.parse(s.params[11] as string), { "0C": 2100, "0D": 80, "05": 88, "0B": 45, "0F": 20, "04": 30, "11": 12, "14": 0.5 });
+  assert.equal(s.params[12], 0); // dato vero
+});
+
+test("eventi simulati: marcati, e lo stato va in una chiave separata", () => {
+  const snap = buildStatement({ type: "snapshot", ts: 1, values: {}, simulated: true });
+  assert.ok(typeof snap !== "string");
+  assert.equal(snap.params.at(-1), 1);
+  const trip = buildStatement({ type: "trip", startMs: 1, endMs: 2, km: 1, fuelL: 0.1, simulated: true });
+  assert.ok(typeof trip !== "string");
+  assert.equal(trip.params.at(-1), 1);
+  const st = buildStatement({ type: "status", ts: 5, simulated: true });
+  assert.ok(typeof st !== "string");
+  assert.equal(st.params[0], "status_sim");
+  const real = buildStatement({ type: "status", ts: 5 });
+  assert.ok(typeof real !== "string");
+  assert.equal(real.params[0], "status");
+  // un valore diverso da true non rende "simulato"
+  const notSim = buildStatement({ type: "drive_report", startMs: 1, endMs: 2, text: "x", simulated: "si" });
+  assert.ok(typeof notSim !== "string");
+  assert.equal(notSim.params.at(-1), 0);
 });
 
 test("snapshot: chiavi non-PID e valori non numerici scartati, mancanti = null", () => {
@@ -32,7 +52,7 @@ test("snapshot senza ts o values rifiutato", () => {
 test("trip valido e incompleto", () => {
   const ok = buildStatement({ type: "trip", startMs: 1, endMs: 2, km: 10.5, fuelL: 0.7, maxSpeed: 90 });
   assert.ok(typeof ok !== "string");
-  assert.deepEqual(ok.params, [1, 2, 10.5, 0.7, 90]);
+  assert.deepEqual(ok.params, [1, 2, 10.5, 0.7, 90, 0]);
   assert.equal(typeof buildStatement({ type: "trip", startMs: 1, endMs: 2, km: 1 }), "string");
 });
 
@@ -49,13 +69,13 @@ test("dtc cancellato e freeze", () => {
     type: "dtc", code: "P0420", kind: "pendente", firstSeenMs: 10, lastSeenMs: 20, clearedMs: 30, freeze: "P0420;0C=1500.0",
   });
   assert.ok(typeof s !== "string");
-  assert.deepEqual(s.params, ["P0420", 10, "pendente", 20, 30, "P0420;0C=1500.0"]);
+  assert.deepEqual(s.params, ["P0420", 10, "pendente", 20, 30, "P0420;0C=1500.0", 0]);
 });
 
 test("drive_report e status", () => {
   const r = buildStatement({ type: "drive_report", startMs: 1, endMs: 2, text: "TEST" });
   assert.ok(typeof r !== "string");
-  assert.deepEqual(r.params, [1, 2, "TEST"]);
+  assert.deepEqual(r.params, [1, 2, "TEST", 0]);
 
   const st = buildStatement({
     type: "status", ts: 99, info: "ELM327 v2.2", supported: [1, 4, "x"], calibration: 1.1, milOn: true,
@@ -63,7 +83,8 @@ test("drive_report e status", () => {
     extra: "ignorato",
   });
   assert.ok(typeof st !== "string");
-  const saved = JSON.parse(st.params[0] as string);
+  assert.equal(st.params[0], "status");
+  const saved = JSON.parse(st.params[1] as string);
   assert.deepEqual(saved.supported, [1, 4]);
   assert.deepEqual(saved.readiness, [{ name: "Catalizzatore", complete: false }]);
   assert.equal("extra" in saved, false);

@@ -1,4 +1,5 @@
-// Accesso ai dati. Gli strumenti dipendono dall'interfaccia `Repo`, non da D1:
+// Accesso ai dati (solo dati VERI: le righe `simulated = 1` vengono sempre escluse).
+// Gli strumenti dipendono dall'interfaccia `Repo`, non da D1:
 // nei test si usa una versione in memoria.
 
 export type SnapshotRow = {
@@ -34,10 +35,10 @@ export class D1Repo implements Repo {
   constructor(db: D1Database) { this.db = db; }
 
   latestSnapshot() {
-    return this.db.prepare(`SELECT * FROM snapshots ORDER BY ts DESC LIMIT 1`).first<SnapshotRow>();
+    return this.db.prepare(`SELECT * FROM snapshots WHERE simulated = 0 ORDER BY ts DESC LIMIT 1`).first<SnapshotRow>();
   }
   async snapshotsSince(sinceMs: number, limit: number) {
-    const r = await this.db.prepare(`SELECT * FROM snapshots WHERE ts >= ? ORDER BY ts DESC LIMIT ?`).bind(sinceMs, limit).all<SnapshotRow>();
+    const r = await this.db.prepare(`SELECT * FROM snapshots WHERE simulated = 0 AND ts >= ? ORDER BY ts DESC LIMIT ?`).bind(sinceMs, limit).all<SnapshotRow>();
     return r.results;
   }
   async status() {
@@ -45,22 +46,22 @@ export class D1Repo implements Repo {
     return row ? (JSON.parse(row.value) as StatusDoc) : null;
   }
   async activeCodes() {
-    const r = await this.db.prepare(`SELECT * FROM dtc WHERE cleared_ms IS NULL ORDER BY first_seen_ms`).all<DtcRow>();
+    const r = await this.db.prepare(`SELECT * FROM dtc WHERE simulated = 0 AND cleared_ms IS NULL ORDER BY first_seen_ms`).all<DtcRow>();
     return r.results;
   }
   async recentClearedCodes(limit: number) {
-    const r = await this.db.prepare(`SELECT * FROM dtc WHERE cleared_ms IS NOT NULL ORDER BY cleared_ms DESC LIMIT ?`).bind(limit).all<DtcRow>();
+    const r = await this.db.prepare(`SELECT * FROM dtc WHERE simulated = 0 AND cleared_ms IS NOT NULL ORDER BY cleared_ms DESC LIMIT ?`).bind(limit).all<DtcRow>();
     return r.results;
   }
   async trips(sinceMs: number, limit: number) {
-    const r = await this.db.prepare(`SELECT * FROM trips WHERE start_ms >= ? ORDER BY start_ms DESC LIMIT ?`).bind(sinceMs, limit).all<TripRow>();
+    const r = await this.db.prepare(`SELECT * FROM trips WHERE simulated = 0 AND start_ms >= ? ORDER BY start_ms DESC LIMIT ?`).bind(sinceMs, limit).all<TripRow>();
     return r.results;
   }
   lastReport() {
-    return this.db.prepare(`SELECT * FROM drive_reports ORDER BY start_ms DESC LIMIT 1`).first<ReportRow>();
+    return this.db.prepare(`SELECT * FROM drive_reports WHERE simulated = 0 ORDER BY start_ms DESC LIMIT 1`).first<ReportRow>();
   }
   async reportList(limit: number) {
-    const r = await this.db.prepare(`SELECT start_ms, end_ms FROM drive_reports ORDER BY start_ms DESC LIMIT ?`).bind(limit).all<{ start_ms: number; end_ms: number }>();
+    const r = await this.db.prepare(`SELECT start_ms, end_ms FROM drive_reports WHERE simulated = 0 ORDER BY start_ms DESC LIMIT ?`).bind(limit).all<{ start_ms: number; end_ms: number }>();
     return r.results;
   }
 }

@@ -48,12 +48,12 @@ export async function handleApi(request: Request, env: ApiEnv): Promise<Response
   return json({ error: "non trovato" }, 404);
 }
 
-/** Ultimo stato noto: serve a verificare l'invio. */
+/** Ultimo stato noto (solo dati veri): serve a verificare l'invio. */
 export async function latest(db: D1Database, now: number) {
-  const snapshot = await db.prepare(`SELECT * FROM snapshots ORDER BY ts DESC LIMIT 1`).first<Record<string, unknown>>();
-  const trip = await db.prepare(`SELECT * FROM trips ORDER BY start_ms DESC LIMIT 1`).first();
+  const snapshot = await db.prepare(`SELECT * FROM snapshots WHERE simulated = 0 ORDER BY ts DESC LIMIT 1`).first<Record<string, unknown>>();
+  const trip = await db.prepare(`SELECT * FROM trips WHERE simulated = 0 ORDER BY start_ms DESC LIMIT 1`).first();
   const status = await db.prepare(`SELECT value FROM meta WHERE key='status'`).first<{ value: string }>();
-  const codes = await db.prepare(`SELECT * FROM dtc WHERE cleared_ms IS NULL ORDER BY last_seen_ms DESC`).all();
+  const codes = await db.prepare(`SELECT * FROM dtc WHERE simulated = 0 AND cleared_ms IS NULL ORDER BY last_seen_ms DESC`).all();
   return {
     snapshot,
     ageSeconds: snapshot ? Math.round((now - (snapshot.ts as number)) / 1000) : null,

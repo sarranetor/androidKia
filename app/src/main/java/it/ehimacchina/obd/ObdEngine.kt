@@ -44,6 +44,13 @@ data class DriveUi(
     val readiness: Readiness?,
 )
 
+/** Vista "prova al minimo" aperta: storico recente, riassunto ultimi 30 s, fotografie. */
+data class IdleUi(
+    val history: List<IdleMonitor.Point>,
+    val summary: IdleMonitor.Summary,
+    val snapshots: List<IdleMonitor.Snapshot>,
+)
+
 data class UiState(
     val running: Boolean = false,
     val status: String = "Non connesso",
@@ -68,6 +75,8 @@ data class UiState(
     val drive: DriveUi? = null,
     /** Testo dell'ultimo rapporto di test di guida, da mostrare/condividere */
     val driveReport: String? = null,
+    /** Vista "prova al minimo" (null se chiusa) */
+    val idle: IdleUi? = null,
 )
 
 /**
@@ -105,6 +114,9 @@ object ObdEngine {
     private var lastReadinessMs = 0L
     private var driveSilentSinceMs = 0L
 
+    // vista "prova al minimo"
+    @Volatile private var idle: IdleMonitor? = null
+
     val db: AppDatabase get() = AppDatabase.get(app)
     private val currentLog = MutableStateFlow<SessionLog?>(null)
 
@@ -141,6 +153,10 @@ object ObdEngine {
 
     /** Attese fra un tentativo di riconnessione e il successivo (l'ultima si ripete) */
     private var currentMode = Mode.REAL
+
+    /** Simulatore e riproduzione: i dati si salvano ma marcati "simulati", mai mescolati a quelli veri. */
+    private val simulated get() = currentMode != Mode.REAL
+    private var sessionStartMs = 0L
     private const val MAX_OUTBOX = 5000
     private const val SNAPSHOT_EVERY_MS = 15_000L
     private var lastSnapshotSentMs = 0L
@@ -165,6 +181,7 @@ object ObdEngine {
             return
         }
         currentMode = mode
+        sessionStartMs = System.currentTimeMillis()
         val log = SessionLog.newSession(app.filesDir, tag)
         currentLog.value = log
         // running = true subito (non dentro la coroutine): il Service lo guarda appena parte
@@ -239,6 +256,23 @@ object ObdEngine {
         commands.trySend(Command.StopDrive)
     }
 
+    /** Apre la vista "prova al minimo": da qui la sonda e le correzioni si leggono più spesso. */
+    fun startIdleView() {
+        if (idle == null) idle = IdleMonitor()
+    }
+
+    fun stopIdleView() {
+        idle = null
+        _state.update { it.copy(idle = null) }
+    }
+
+    /** Fotografa gli ultimi 30 s della vista minimo (per il confronto prima/dopo una prova). */
+    fun idleSnapshot() {
+        val m = idle ?: return
+        m.snapshot(System.currentTimeMillis())
+        _state.update { it.copy(idle = it.idle?.copy(snapshots = m.snapshots())) }
+    }
+
     fun dismissDriveReport() = _state.update { it.copy(driveReport = null) }
 
     /** Mette in coda tutto lo storico già presente nell'app (viaggi, codici, rapporti), per il primo collegamento al server. */
@@ -247,12 +281,20 @@ object ObdEngine {
         val dao = db.dao()
         var n = 0
         refreshCalibration()
-        dao.allTrips().filter { it.km >= 0.1 }.forEach {
+        dao.realTrips().filter { it.km >= 0.1 }.forEach {
             enqueue(Events.trip(it.startMs, it.endMs, it.km, it.fuelL * calibration, it.maxSpeed)); n++
         }
-        dao.allDtcs().forEach { enqueue(Events.dtc(it)); n++ }
-        dao.allDriveReports().forEach { enqueue(Events.driveReport(it.startMs, it.endMs, it.text)); n++ }
+        dao.allDtcs().filter { !it.simulated }.forEach { enqueue(Events.dtc(it)); n++ }
+        dao.allDriveReports().filter { !it.simulated }.forEach { enqueue(Events.driveReport(it.startMs, it.endMs, it.text)); n++ }
         return n
+    }
+
+    /** Elimina viaggi, codici e rapporti di prova; i dati veri restano. */
+    fun deleteSimulatedData() {
+        scope.launch {
+            val dao = db.dao()
+            dao.deleteSimulatedSamples(); dao.deleteSimulatedTrips(); dao.deleteSimulatedDtc(); dao.deleteSimulatedReports()
+        }
     }
 
     fun dismissNotice() = _state.update { it.copy(notice = null) }
@@ -275,7 +317,7 @@ object ObdEngine {
         val dao = db.dao()
         calibration = Calibration.factor(
             dao.allRefuels().map { RefuelRec(it.dateMs, it.liters, it.km) },
-            dao.allTrips().map { TripRec(it.startMs, it.km, it.fuelL) },
+            dao.realTrips().map { TripRec(it.startMs, it.km, it.fuelL) },
         )
         _state.update { it.copy(calibration = calibration) }
     }
@@ -306,6 +348,8 @@ object ObdEngine {
         val normalPoller = Poller(elm, supported.mapNotNull { Pids.get(it) })
         // durante il test di guida: sonde O2 e giri a ogni ciclo, 3 PID lenti a rotazione
         fun known(ids: List<Int>) = ids.filter { it in supported }.mapNotNull { Pids.get(it) }
+        // vista minimo: sonda a monte, correzione breve e giri a ogni ciclo (~2–3 letture al secondo)
+        val idlePoller = Poller(elm, known(listOf(0x14, 0x06, 0x0C)), known(listOf(0x07, 0x05, 0x03, 0x2E, 0x15)), 2)
         val drivePoller = Poller(
             elm, known(listOf(0x14, 0x15, 0x0C, 0x0D, 0x04, 0x0B)), known(listOf(0x03, 0x05, 0x06, 0x07, 0x3C, 0x44, 0x0F, 0x43)), 3,
         )
@@ -317,7 +361,11 @@ object ObdEngine {
         while (true) {
             handleCommands(elm)
 
-            val poller = if (drive != null) drivePoller else normalPoller
+            val poller = when {
+                idle != null -> idlePoller
+                drive != null -> drivePoller
+                else -> normalPoller
+            }
             poller.cycle { pid, value ->
                 _state.update {
                     it.copy(values = if (value == null) it.values - pid.id else it.values + (pid.id to value))
@@ -325,6 +373,7 @@ object ObdEngine {
             }
             trackTrip()
             trackDrive(elm, 0x3C in supported)
+            trackIdle()
             if (System.currentTimeMillis() - lastBattery > 5000) {
                 lastBattery = System.currentTimeMillis()
                 val v = elm.batteryVoltage()
@@ -399,6 +448,13 @@ object ObdEngine {
         }
     }
 
+    private fun trackIdle() {
+        val m = idle ?: return
+        val now = System.currentTimeMillis()
+        m.add(now, _state.value.values)
+        _state.update { it.copy(idle = IdleUi(m.history(), m.summary(now), m.snapshots())) }
+    }
+
     /**
      * Chiude il test di guida e crea il rapporto (salvato nel database). Con [elm] null
      * (collegamento chiuso) si usano solo i dati già raccolti.
@@ -419,8 +475,8 @@ object ObdEngine {
         }
         val now = System.currentTimeMillis()
         val report = d.report(now, driveStartDiag, endDiag)
-        db.dao().insertDriveReport(DriveReportEntity(startMs = report.startMs, endMs = report.endMs, text = report.text))
-        enqueue(Events.driveReport(report.startMs, report.endMs, report.text))
+        db.dao().insertDriveReport(DriveReportEntity(startMs = report.startMs, endMs = report.endMs, text = report.text, simulated = simulated))
+        enqueue(Events.driveReport(report.startMs, report.endMs, report.text, simulated))
         _state.update { it.copy(drive = null, driveReport = report.text, diagnosis = endDiag ?: it.diagnosis) }
     }
 
@@ -436,7 +492,7 @@ object ObdEngine {
         val ok = elm.clearCodes()
         val dao = db.dao()
         val now = System.currentTimeMillis()
-        if (ok) dao.openDtcs().forEach {
+        if (ok) dao.openDtcs(simulated).forEach {
             val cleared = it.copy(clearedMs = now)
             dao.updateDtc(cleared)
             enqueue(Events.dtc(cleared))
@@ -458,10 +514,10 @@ object ObdEngine {
         val all = (d.stored.orEmpty().map { it to "memorizzato" } + d.pending.orEmpty().map { it to "pendente" })
             .distinctBy { it.first }
         for ((code, kind) in all) {
-            val open = dao.openDtc(code)
+            val open = dao.openDtc(code, simulated)
             val freeze = d.freezeFrame?.textFor(code)
             if (open == null) {
-                dao.insertDtc(DtcEntity(code = code, kind = kind, firstSeenMs = d.atMillis, lastSeenMs = d.atMillis, clearedMs = null, freeze = freeze))
+                dao.insertDtc(DtcEntity(code = code, kind = kind, firstSeenMs = d.atMillis, lastSeenMs = d.atMillis, clearedMs = null, freeze = freeze, simulated = simulated))
             } else {
                 // ripara anche i freeze frame salvati per errore sul codice sbagliato (versioni precedenti)
                 val keep = open.freeze?.takeIf { it.startsWith(code) }
@@ -470,24 +526,24 @@ object ObdEngine {
         }
         // codici aperti che la centralina non riporta più: spariti da soli (o cancellati altrove)
         if (d.stored != null && d.pending != null) {
-            dao.openDtcs().filter { o -> all.none { it.first == o.code } }.forEach {
+            dao.openDtcs(simulated).filter { o -> all.none { it.first == o.code } }.forEach {
                 dao.updateDtc(it.copy(clearedMs = d.atMillis))
             }
         }
         // al server tutti i codici ancora aperti (poche righe; l'invio è idempotente, quindi anche i codici
         // già presenti prima di attivare l'invio arrivano), più quelli appena cancellati
-        dao.allDtcs().filter { it.clearedMs == null || it.clearedMs == d.atMillis }.forEach { enqueue(Events.dtc(it)) }
+        dao.allDtcs().filter { it.simulated == simulated && (it.clearedMs == null || it.clearedMs == d.atMillis) }.forEach { enqueue(Events.dtc(it)) }
         val s = _state.value
-        enqueue(Events.status(d.atMillis, s.info, s.supported, calibration, d))
+        enqueue(Events.status(d.atMillis, s.info, s.supported, calibration, d, simulated))
     }
 
-    /** Aggiorna viaggio e consumi dopo ogni ciclo di lettura; salva su database. */
+    /** Aggiorna viaggio e consumi dopo ogni ciclo di lettura; salva su database (solo auto vera). */
     private suspend fun trackTrip() {
         val now = System.currentTimeMillis()
         val v = _state.value.values
         when (val ev = tracker.tick(now, v)) {
             is TripTracker.Event.Started -> {
-                tripId = db.dao().insertTrip(TripEntity(startMs = ev.startMs, endMs = now, km = 0.0, fuelL = 0.0, maxSpeed = 0.0))
+                tripId = db.dao().insertTrip(TripEntity(startMs = ev.startMs, endMs = now, km = 0.0, fuelL = 0.0, maxSpeed = 0.0, simulated = simulated))
                 lastSampleMs = now; lastTripSaveMs = now; lastSnapshotSentMs = 0
             }
             is TripTracker.Event.Ended -> endTrip(ev)
@@ -500,49 +556,49 @@ object ObdEngine {
                 trip = if (tracker.active) TripInfo(tracker.currentStartMs, tracker.km, tracker.fuelL * calibration) else null,
             )
         }
+        if (!tracker.active) return
         val id = tripId
-        if (id != null && tracker.active) {
-            if (now - lastSampleMs >= 2000) {
-                lastSampleMs = now
-                val s = _state.value
-                db.dao().insertSample(
-                    SampleEntity(
-                        tripId = id, tMs = now, rpm = v[0x0C], speed = v[0x0D], coolant = v[0x05],
-                        load = v[0x04], mapKpa = v[0x0B], battery = s.battery, lph = lph,
-                    ),
-                )
-            }
-            if (now - lastSnapshotSentMs >= SNAPSHOT_EVERY_MS) {
-                lastSnapshotSentMs = now
-                enqueue(Events.snapshot(now, v, _state.value.battery, lph, tracker.km))
-            }
-            if (now - lastTripSaveMs >= 30_000) {
-                lastTripSaveMs = now
-                saveTrip(id, now, tracker.maxSpeed)
-            }
+        if (id != null && now - lastSampleMs >= 2000) {
+            lastSampleMs = now
+            db.dao().insertSample(
+                SampleEntity(
+                    tripId = id, tMs = now, rpm = v[0x0C], speed = v[0x0D], coolant = v[0x05],
+                    load = v[0x04], mapKpa = v[0x0B], battery = _state.value.battery, lph = lph,
+                ),
+            )
+        }
+        if (now - lastSnapshotSentMs >= SNAPSHOT_EVERY_MS) {
+            lastSnapshotSentMs = now
+            enqueue(Events.snapshot(now, v, _state.value.battery, lph, tracker.km, simulated))
+        }
+        if (id != null && now - lastTripSaveMs >= 30_000) {
+            lastTripSaveMs = now
+            saveTrip(id, now, tracker.maxSpeed)
         }
     }
 
     private suspend fun saveTrip(id: Long, endMs: Long, maxSpeed: Double = 0.0) {
         db.dao().updateTrip(
-            TripEntity(id = id, startMs = tracker.currentStartMs, endMs = endMs, km = tracker.km, fuelL = tracker.fuelL, maxSpeed = maxSpeed),
+            TripEntity(id = id, startMs = tracker.currentStartMs, endMs = endMs, km = tracker.km, fuelL = tracker.fuelL, maxSpeed = maxSpeed, simulated = simulated),
         )
     }
 
     /** Chiude il viaggio: salva il riepilogo (o scarta le accensioni trascurabili) e ricalcola la taratura. */
     private suspend fun endTrip(ev: TripTracker.Event.Ended?) {
-        val id = tripId ?: return
+        val id = tripId
         tripId = null
         val sm = ev?.summary ?: return
-        val dao = db.dao()
-        if (sm.worthSaving) {
-            dao.updateTrip(TripEntity(id, sm.startMs, sm.endMs, sm.km, sm.fuelL, sm.maxSpeed))
-            refreshCalibration()
-            enqueue(Events.trip(sm.startMs, sm.endMs, sm.km, sm.fuelL * calibration, sm.maxSpeed))
-        } else {
-            dao.deleteSamples(id)
-            dao.deleteTrip(id)
+        if (id != null) {
+            val dao = db.dao()
+            if (sm.worthSaving) {
+                dao.updateTrip(TripEntity(id, sm.startMs, sm.endMs, sm.km, sm.fuelL, sm.maxSpeed, simulated))
+                refreshCalibration()
+            } else {
+                dao.deleteSamples(id)
+                dao.deleteTrip(id)
+            }
         }
+        if (sm.worthSaving) enqueue(Events.trip(sm.startMs, sm.endMs, sm.km, sm.fuelL * calibration, sm.maxSpeed, simulated))
     }
 
     private fun addConsole(line: String) = _state.update { it.copy(console = (it.console + line).takeLast(50)) }

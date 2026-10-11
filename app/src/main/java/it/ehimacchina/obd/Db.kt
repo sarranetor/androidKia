@@ -1,6 +1,7 @@
 package it.ehimacchina.obd
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -24,6 +25,8 @@ data class TripEntity(
     val km: Double,
     val fuelL: Double,
     val maxSpeed: Double,
+    /** true = nato col simulatore o con la riproduzione di un log: mai trattato come dato vero */
+    @ColumnInfo(defaultValue = "0") val simulated: Boolean = false,
 )
 
 /** Campione dei dati, uno ogni ~2 secondi durante un viaggio. */
@@ -53,6 +56,7 @@ data class DtcEntity(
     val clearedMs: Long?,
     /** Freeze frame in testo, vedi [FreezeFrame.toText] */
     val freeze: String?,
+    @ColumnInfo(defaultValue = "0") val simulated: Boolean = false,
 )
 
 /** Rifornimento inserito a mano: litri messi e km fatti dal pieno precedente. */
@@ -79,6 +83,7 @@ data class DriveReportEntity(
     val startMs: Long,
     val endMs: Long,
     val text: String,
+    @ColumnInfo(defaultValue = "0") val simulated: Boolean = false,
 )
 
 @Dao
@@ -98,6 +103,7 @@ interface ObdDao {
     @Update suspend fun updateTrip(t: TripEntity)
     @Query("SELECT * FROM trips ORDER BY startMs DESC") fun tripsFlow(): Flow<List<TripEntity>>
     @Query("SELECT * FROM trips ORDER BY startMs") suspend fun allTrips(): List<TripEntity>
+    @Query("SELECT * FROM trips WHERE simulated = 0 ORDER BY startMs") suspend fun realTrips(): List<TripEntity>
 
     @Query("DELETE FROM trips WHERE id = :id") suspend fun deleteTrip(id: Long)
     @Query("DELETE FROM samples WHERE tripId = :id") suspend fun deleteSamples(id: Long)
@@ -106,11 +112,20 @@ interface ObdDao {
 
     @Insert suspend fun insertDtc(d: DtcEntity): Long
     @Update suspend fun updateDtc(d: DtcEntity)
-    @Query("SELECT * FROM dtc WHERE code = :code AND clearedMs IS NULL LIMIT 1") suspend fun openDtc(code: String): DtcEntity?
-    @Query("SELECT * FROM dtc WHERE clearedMs IS NULL") suspend fun openDtcs(): List<DtcEntity>
+    @Query("SELECT * FROM dtc WHERE code = :code AND clearedMs IS NULL AND simulated = :simulated LIMIT 1")
+    suspend fun openDtc(code: String, simulated: Boolean): DtcEntity?
+    @Query("SELECT * FROM dtc WHERE clearedMs IS NULL AND simulated = :simulated") suspend fun openDtcs(simulated: Boolean): List<DtcEntity>
     @Query("SELECT * FROM dtc") suspend fun allDtcs(): List<DtcEntity>
     @Query("SELECT * FROM drive_reports") suspend fun allDriveReports(): List<DriveReportEntity>
     @Query("SELECT * FROM dtc ORDER BY lastSeenMs DESC") fun dtcFlow(): Flow<List<DtcEntity>>
+
+    /** Cancella tutti i dati di prova (simulatore/riproduzione), lasciando intatti quelli veri. */
+    @Query("DELETE FROM samples WHERE tripId IN (SELECT id FROM trips WHERE simulated = 1)") suspend fun deleteSimulatedSamples()
+    @Query("DELETE FROM trips WHERE simulated = 1") suspend fun deleteSimulatedTrips()
+    @Query("DELETE FROM dtc WHERE simulated = 1") suspend fun deleteSimulatedDtc()
+    @Query("DELETE FROM drive_reports WHERE simulated = 1") suspend fun deleteSimulatedReports()
+    @Query("SELECT (SELECT COUNT(*) FROM trips WHERE simulated = 1) + (SELECT COUNT(*) FROM dtc WHERE simulated = 1) + (SELECT COUNT(*) FROM drive_reports WHERE simulated = 1)")
+    fun simulatedCount(): Flow<Int>
 
     @Insert suspend fun insertRefuel(r: RefuelEntity): Long
     @Query("DELETE FROM refuels WHERE id = :id") suspend fun deleteRefuel(id: Long)
@@ -120,7 +135,7 @@ interface ObdDao {
 
 @Database(
     entities = [TripEntity::class, SampleEntity::class, DtcEntity::class, RefuelEntity::class, DriveReportEntity::class, OutboxEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -147,11 +162,20 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v4: segno "simulato" su viaggi, codici e rapporti (i dati esistenti restano veri) */
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                for (t in listOf("trips", "dtc", "drive_reports")) {
+                    db.execSQL("ALTER TABLE `$t` ADD COLUMN `simulated` INTEGER NOT NULL DEFAULT 0")
+                }
+            }
+        }
+
         @Volatile private var instance: AppDatabase? = null
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "ehi-macchina.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build().also { instance = it }
         }
     }

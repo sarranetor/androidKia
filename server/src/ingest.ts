@@ -24,6 +24,8 @@ const SNAPSHOT_COLUMNS: Record<string, string> = {
 /** Costruisce lo statement di un evento, oppure ritorna il motivo per cui è da scartare. */
 export function buildStatement(ev: unknown): Stmt | string {
   if (!isObj(ev)) return "evento non è un oggetto";
+  // dati del simulatore/riproduzione: si salvano marcati, gli strumenti per Claude li ignorano
+  const sim = ev.simulated === true ? 1 : 0;
   switch (ev.type) {
     case "snapshot": {
       if (!isNum(ev.ts) || ev.ts <= 0) return "snapshot: ts mancante";
@@ -36,44 +38,44 @@ export function buildStatement(ev: unknown): Stmt | string {
       const trip = isObj(ev.trip) ? ev.trip : null;
       return {
         sql: `INSERT OR IGNORE INTO snapshots
-              (ts, rpm, speed, coolant, load, map, iat, throttle, battery, lph, trip_km, values_json)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+              (ts, rpm, speed, coolant, load, map, iat, throttle, battery, lph, trip_km, values_json, simulated)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         params: [
           ev.ts, col("0C"), col("0D"), col("05"), col("04"), col("0B"), col("0F"), col("11"),
           numOrNull(ev.battery), numOrNull(ev.lph), trip ? numOrNull(trip.km) : null,
-          JSON.stringify(values),
+          JSON.stringify(values), sim,
         ],
       };
     }
     case "trip": {
       if (!isNum(ev.startMs) || !isNum(ev.endMs) || !isNum(ev.km) || !isNum(ev.fuelL)) return "trip: campi mancanti";
       return {
-        sql: `INSERT INTO trips (start_ms, end_ms, km, fuel_l, max_speed) VALUES (?,?,?,?,?)
+        sql: `INSERT INTO trips (start_ms, end_ms, km, fuel_l, max_speed, simulated) VALUES (?,?,?,?,?,?)
               ON CONFLICT(start_ms) DO UPDATE SET end_ms=excluded.end_ms, km=excluded.km,
-                fuel_l=excluded.fuel_l, max_speed=excluded.max_speed`,
-        params: [ev.startMs, ev.endMs, ev.km, ev.fuelL, numOrNull(ev.maxSpeed) ?? 0],
+                fuel_l=excluded.fuel_l, max_speed=excluded.max_speed, simulated=excluded.simulated`,
+        params: [ev.startMs, ev.endMs, ev.km, ev.fuelL, numOrNull(ev.maxSpeed) ?? 0, sim],
       };
     }
     case "dtc": {
       if (!isStr(ev.code, 8) || !/^[PCBU][0-9A-F]{4}$/.test(ev.code)) return "dtc: codice non valido";
       if (!isNum(ev.firstSeenMs) || !isNum(ev.lastSeenMs)) return "dtc: date mancanti";
       return {
-        sql: `INSERT INTO dtc (code, first_seen_ms, kind, last_seen_ms, cleared_ms, freeze)
-              VALUES (?,?,?,?,?,?)
+        sql: `INSERT INTO dtc (code, first_seen_ms, kind, last_seen_ms, cleared_ms, freeze, simulated)
+              VALUES (?,?,?,?,?,?,?)
               ON CONFLICT(code, first_seen_ms) DO UPDATE SET kind=excluded.kind,
                 last_seen_ms=excluded.last_seen_ms, cleared_ms=excluded.cleared_ms,
                 freeze=COALESCE(excluded.freeze, dtc.freeze)`,
         params: [
           ev.code, ev.firstSeenMs, isStr(ev.kind, 20) ? ev.kind : "memorizzato", ev.lastSeenMs,
-          numOrNull(ev.clearedMs), isStr(ev.freeze, 2000) ? ev.freeze : null,
+          numOrNull(ev.clearedMs), isStr(ev.freeze, 2000) ? ev.freeze : null, sim,
         ],
       };
     }
     case "drive_report": {
       if (!isNum(ev.startMs) || !isNum(ev.endMs) || !isStr(ev.text, 20000)) return "drive_report: campi mancanti";
       return {
-        sql: `INSERT OR IGNORE INTO drive_reports (start_ms, end_ms, text) VALUES (?,?,?)`,
-        params: [ev.startMs, ev.endMs, ev.text],
+        sql: `INSERT OR IGNORE INTO drive_reports (start_ms, end_ms, text, simulated) VALUES (?,?,?,?)`,
+        params: [ev.startMs, ev.endMs, ev.text, sim],
       };
     }
     case "status": {
@@ -93,9 +95,10 @@ export function buildStatement(ev: unknown): Stmt | string {
         ts: ev.ts,
       };
       return {
-        sql: `INSERT INTO meta (key, value, updated_at) VALUES ('status', ?, ?)
+        // lo stato del simulatore va in una chiave a parte: non deve sovrascrivere quello dell'auto vera
+        sql: `INSERT INTO meta (key, value, updated_at) VALUES (?, ?, ?)
               ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
-        params: [JSON.stringify(status), ev.ts],
+        params: [sim ? "status_sim" : "status", JSON.stringify(status), ev.ts],
       };
     }
     default:

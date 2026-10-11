@@ -51,7 +51,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private enum class Page { HOME, DIAGNOSIS, CONSUMI, SERVER, DEBUG }
+private enum class Page { HOME, DIAGNOSIS, IDLE, CONSUMI, SERVER, DEBUG }
 
 
 class MainActivity : ComponentActivity() {
@@ -132,10 +132,13 @@ class MainActivity : ComponentActivity() {
             if (wanted.isNotEmpty()) permissions.launch(wanted.toTypedArray())
         }
 
-        BackHandler(enabled = page != Page.HOME) { page = Page.HOME }
+        BackHandler(enabled = page != Page.HOME) {
+            if (page == Page.IDLE) { ObdEngine.stopIdleView(); page = Page.DIAGNOSIS } else page = Page.HOME
+        }
 
         when {
-            page == Page.DIAGNOSIS -> DiagnosisPage(ui) { page = Page.HOME }
+            page == Page.DIAGNOSIS -> DiagnosisPage(ui, onIdle = { ObdEngine.startIdleView(); page = Page.IDLE }) { page = Page.HOME }
+            page == Page.IDLE -> IdlePage(ui) { ObdEngine.stopIdleView(); page = Page.DIAGNOSIS }
             page == Page.CONSUMI -> ConsumiPage(ui) { page = Page.HOME }
             page == Page.SERVER -> ServerPage { page = Page.HOME }
             page == Page.DEBUG -> DebugPage(ui) { page = Page.HOME }
@@ -196,8 +199,8 @@ class MainActivity : ComponentActivity() {
 
             SectionCard("Sorgente dati") {
                 ChoiceCard(mode == Mode.REAL, "Auto", "Adattatore ELM327 via Bluetooth", painterResource(R.drawable.ic_stat_gauge), { mode = Mode.REAL })
-                ChoiceCard(mode == Mode.SIMULATOR, "Simulatore", "Dati finti per provare l'app a casa", rememberVectorPainter(Icons.Filled.PlayArrow), { mode = Mode.SIMULATOR })
-                ChoiceCard(mode == Mode.REPLAY, "Riproduci log", "Rivedi una sessione registrata", rememberVectorPainter(Icons.Filled.Refresh), { mode = Mode.REPLAY })
+                ChoiceCard(mode == Mode.SIMULATOR, "Simulatore", "Dati finti per prove (salvati come «simulati»)", rememberVectorPainter(Icons.Filled.PlayArrow), { mode = Mode.SIMULATOR })
+                ChoiceCard(mode == Mode.REPLAY, "Riproduci log", "Rivedi una sessione registrata (dati «simulati»)", rememberVectorPainter(Icons.Filled.Refresh), { mode = Mode.REPLAY })
                 if (mode == Mode.REAL) {
                     val names = devices.map { "${it.name} (${it.address})" }
                     Picker(
@@ -234,6 +237,24 @@ class MainActivity : ComponentActivity() {
                 NavTile("Codici", Icons.Filled.Warning, onDiagnosis, Modifier.weight(1f))
                 NavTile("Consumi", Icons.Filled.DateRange, onConsumi, Modifier.weight(1f))
                 NavTile("Server", Icons.Filled.Settings, onServer, Modifier.weight(1f))
+            }
+            val simCount by remember { ObdEngine.db.dao().simulatedCount() }.collectAsState(0)
+            var confirmDelete by remember { mutableStateOf(false) }
+            if (simCount > 0) {
+                OutlinedButton(onClick = { confirmDelete = true }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Elimina dati di prova ($simCount)")
+                }
+            }
+            if (confirmDelete) {
+                AlertDialog(
+                    onDismissRequest = { confirmDelete = false },
+                    title = { Text("Eliminare i dati di prova?") },
+                    text = { Text("Si cancellano viaggi, codici e rapporti nati col simulatore o con la riproduzione di un log. I dati veri dell'auto restano.") },
+                    confirmButton = { TextButton(onClick = { confirmDelete = false; ObdEngine.deleteSimulatedData() }) { Text("Elimina") } },
+                    dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Annulla") } },
+                )
             }
             TextButton(onClick = { ObdEngine.latestLogFile()?.let { shareLog(it) } }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
                 Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -337,7 +358,7 @@ class MainActivity : ComponentActivity() {
     // ---- diagnosi codici errore
 
     @Composable
-    private fun DiagnosisPage(ui: UiState, onBack: () -> Unit) {
+    private fun DiagnosisPage(ui: UiState, onIdle: () -> Unit, onBack: () -> Unit) {
         val d = ui.diagnosis
         val history by remember { ObdEngine.db.dao().dtcFlow() }.collectAsState(emptyList())
         var confirmClear by remember { mutableStateOf(false) }
@@ -366,6 +387,19 @@ class MainActivity : ComponentActivity() {
 
             // test di guida in alto: è la cosa che si cerca di più
             DriveTestSection(ui)
+
+            SectionCard("Prova al minimo") {
+                Text(
+                    "Correzione carburante e sonda lambda in diretta, a motore caldo e auto ferma. " +
+                        "Serve a vedere subito l'effetto di una prova (es. tubo del canister chiuso).",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                FilledTonalButton(onClick = onIdle, enabled = ui.running, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Apri vista minimo")
+                }
+            }
 
             if (d != null) {
                 SectionCard("Spia motore e codici") {
@@ -422,8 +456,9 @@ class MainActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            CodeBadge(h.code, if (h.clearedMs == null) Palette.Crit else Palette.Muted)
+                            CodeBadge(h.code, if (h.clearedMs == null && !h.simulated) Palette.Crit else Palette.Muted)
                             Spacer(Modifier.width(10.dp))
+                            if (h.simulated) { SimBadge(); Spacer(Modifier.width(8.dp)) }
                             Text(
                                 if (h.clearedMs == null) h.kind else "cancellato " + fmt.format(Date(h.clearedMs)),
                                 style = MaterialTheme.typography.bodySmall, color = Palette.Muted,
@@ -538,6 +573,7 @@ class MainActivity : ComponentActivity() {
                                 "${fmt.format(Date(r.startMs))} · ${DriveTestAnalyzer.mmss(r.endMs - r.startMs)}",
                                 style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f),
                             )
+                            if (r.simulated) SimBadge()
                             TextButton(onClick = { openId = if (openId == r.id) null else r.id }) {
                                 Text(if (openId == r.id) "Nascondi" else "Apri")
                             }
@@ -588,6 +624,106 @@ class MainActivity : ComponentActivity() {
             codes.isEmpty() -> CheckRow(true, "Nessuno")
             else -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { codes.forEach { CodeBadge(it, color) } }
         }
+    }
+
+    // ---- prova al minimo (diretta)
+
+    @Composable
+    private fun IdlePage(ui: UiState, onBack: () -> Unit) {
+        val idle = ui.idle
+        val sm = idle?.summary
+        val last = idle?.history?.lastOrNull()
+        val v = ui.values
+        val fmt = SimpleDateFormat("HH:mm:ss", Locale.ITALY)
+
+        PageScaffold("Prova al minimo", subtitle = "Correzione e sonda in diretta", onBack = onBack) {
+            if (!ui.running) InfoBanner("Connettiti all'auto: la vista si aggiorna solo con l'app collegata.")
+            Hint("Motore caldo, auto ferma in folle o P, freno a mano tirato. Attenzione a ventola e parti calde se apri il cofano.", Palette.Warn)
+
+            // stato della regolazione (PID 03)
+            val loop = v[0x03]
+            StatusPill(
+                IdleMonitor.loopLabel(loop),
+                when (loop?.toInt()) { 2 -> Palette.Ok; null -> Palette.Muted; else -> Palette.Warn },
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val total = (v[0x06] ?: 0.0) + (v[0x07] ?: 0.0)
+                val totalColor = when {
+                    v[0x06] == null -> Palette.Text
+                    kotlin.math.abs(total) >= 10 -> Palette.Warn
+                    else -> Palette.Text
+                }
+                MetricTile(
+                    "Correzione totale", if (v[0x06] != null) "%+.1f".format(total) else "—", "%", 40.sp,
+                    Modifier.weight(1f).height(130.dp), color = totalColor,
+                )
+                val o2 = v[0x14]
+                val o2Color = when { o2 == null -> Palette.Text; o2 > 0.7 -> Palette.Warn; o2 < 0.2 -> Palette.Accent; else -> Palette.Text }
+                MetricTile(
+                    "Sonda a monte", o2?.let { "%.2f".format(it) } ?: "—", "V", 40.sp,
+                    Modifier.weight(1f).height(130.dp), color = o2Color,
+                )
+            }
+
+            SectionCard("Sonda a monte (ultimi 2 min)") {
+                Sparkline(idle?.history?.map { it.o2 } ?: emptyList(), 0.0, 1.0, 0.45, Palette.Accent)
+                Hint("Sana e in regolazione: oscilla sopra e sotto la linea (0,45 V) più volte al minuto. Sempre in alto = miscela ricca.")
+            }
+            SectionCard("Correzione breve (ultimi 2 min)") {
+                Sparkline(idle?.history?.map { it.stft } ?: emptyList(), -25.0, 25.0, 0.0, Palette.Warn)
+                Hint("Sotto lo zero la centralina toglie benzina, sopra ne aggiunge. Ferma = non sta correggendo.")
+            }
+
+            SectionCard("Ultimi 30 secondi") {
+                if (sm == null || sm.samples < 3) Hint("Raccolta dati in corso…")
+                else IdleSummaryRows(sm)
+                KeyValueRow("Correzione lunga (LTFT)", v[0x07]?.let { "%+.1f %%".format(it) } ?: "—")
+                KeyValueRow("Giri", v[0x0C]?.let { "%.0f".format(it) } ?: "—")
+                KeyValueRow("Temperatura liquido", v[0x05]?.let { "%.0f °C".format(it) } ?: "—")
+                KeyValueRow("Spurgo canister comandato", v[0x2E]?.let { "%.0f %%".format(it) } ?: "—")
+            }
+
+            SectionCard("Confronto prima / dopo") {
+                Text(
+                    "1. Aspetta 1 minuto al minimo e premi «Fotografa».  2. Fai la prova (es. stringi o tappa il tubo della " +
+                        "valvola del canister).  3. Aspetta 1 minuto e fotografa di nuovo.  Se la correzione va verso lo zero e la sonda " +
+                        "torna a oscillare, la prova ha trovato il colpevole.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Button(onClick = { ObdEngine.idleSnapshot() }, enabled = ui.running && (sm?.samples ?: 0) >= 3, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Fotografa ultimi 30 s")
+                }
+                val shots = idle?.snapshots.orEmpty()
+                val first = shots.firstOrNull()?.summary
+                shots.forEach { shot ->
+                    Column(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Palette.SurfaceHigh).padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("Fotografia ${shot.number} · ${fmt.format(Date(shot.atMs))}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        IdleSummaryRows(shot.summary)
+                        if (shot.number > 1 && first?.total != null && shot.summary.total != null) {
+                            val delta = shot.summary.total - first.total
+                            Hint("Rispetto alla prima: correzione %+.1f punti".format(delta), if (delta > 3) Palette.Ok else Palette.Muted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun IdleSummaryRows(s: IdleMonitor.Summary) {
+        KeyValueRow("Correzione totale media", s.total?.let { "%+.1f %%".format(it) } ?: "—",
+            if ((s.total ?: 0.0) <= -10 || (s.total ?: 0.0) >= 10) Palette.Warn else Palette.Text)
+        KeyValueRow("Sonda a monte media", s.o2Mean?.let { "%.2f V".format(it) } ?: "—")
+        KeyValueRow("Tempo sul ricco (> 0,7 V)", s.richShare?.let { "%.0f %%".format(it * 100) } ?: "—",
+            if ((s.richShare ?: 0.0) >= 0.9) Palette.Warn else Palette.Text)
+        KeyValueRow("Passaggi ricco/magro al minuto", s.switchesPerMin?.let { "%.0f".format(it) } ?: "—")
+        s.closedLoopShare?.let { KeyValueRow("In anello chiuso", "%.0f %%".format(it * 100)) }
     }
 
     // ---- server
@@ -694,12 +830,12 @@ class MainActivity : ComponentActivity() {
 
         // riepilogo degli ultimi 30 giorni (solo viaggi non trascurabili)
         val since = System.currentTimeMillis() - 30L * 24 * 3600 * 1000
-        val recent = trips.filter { it.startMs >= since && it.km >= 0.5 }
+        val recent = trips.filter { it.startMs >= since && it.km >= 0.5 && !it.simulated }
         val totalKm = recent.sumOf { it.km }
         val totalL = recent.sumOf { it.fuelL } * ui.calibration
 
         PageScaffold("Consumi", subtitle = "Viaggi e rifornimenti", onBack = onBack) {
-            SectionCard("Ultimi 30 giorni") {
+            SectionCard("Ultimi 30 giorni (solo dati veri)") {
                 Row {
                     SummaryNumber(if (totalKm >= 1) "%.1f".format(totalL / totalKm * 100) else "—", "L/100km medi", Modifier.weight(1f))
                     SummaryNumber("%.0f".format(totalKm), "km", Modifier.weight(1f))
@@ -755,7 +891,10 @@ class MainActivity : ComponentActivity() {
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text(fmt.format(Date(t.startMs)), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(fmt.format(Date(t.startMs)), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                                if (t.simulated) { Spacer(Modifier.width(8.dp)); SimBadge() }
+                            }
                             Hint("%.1f km · %d min · max %.0f km/h".format(t.km, minutes, t.maxSpeed))
                         }
                         Column(horizontalAlignment = Alignment.End) {

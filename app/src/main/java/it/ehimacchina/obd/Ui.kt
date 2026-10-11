@@ -1,6 +1,11 @@
 package it.ehimacchina.obd
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -339,4 +344,41 @@ fun NavTile(label: String, icon: ImageVector, onClick: () -> Unit, modifier: Mod
         Spacer(Modifier.height(6.dp))
         Text(label, style = MaterialTheme.typography.labelLarge)
     }
+}
+
+/**
+ * Grafico a linea minimale: valori nel tempo fra [min] e [max], con una linea di riferimento
+ * tratteggiata (es. 0,45 V per la sonda, 0 % per la correzione). I null interrompono la linea.
+ */
+@Composable
+fun Sparkline(values: List<Double?>, min: Double, max: Double, reference: Double?, color: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier.fillMaxWidth().height(90.dp).clip(RoundedCornerShape(12.dp)).background(Palette.SurfaceHigh)) {
+        fun y(v: Double) = size.height * (1 - ((v - min) / (max - min)).coerceIn(0.0, 1.0)).toFloat()
+        if (reference != null) {
+            drawLine(
+                Palette.Muted.copy(alpha = 0.6f), Offset(0f, y(reference)), Offset(size.width, y(reference)),
+                strokeWidth = 2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f)),
+            )
+        }
+        if (values.size < 2) return@Canvas
+        val step = size.width / (values.size - 1)
+        val path = Path()
+        var pen = false
+        values.forEachIndexed { i, v ->
+            if (v == null) { pen = false; return@forEachIndexed }
+            val x = i * step
+            if (pen) path.lineTo(x, y(v)) else path.moveTo(x, y(v))
+            pen = true
+        }
+        drawPath(path, color, style = Stroke(width = 4f))
+    }
+}
+
+/** Etichetta per i dati nati col simulatore o con la riproduzione di un log. */
+@Composable
+fun SimBadge() {
+    Text(
+        "SIMULATO", fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, color = Palette.Accent,
+        modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Palette.Accent.copy(alpha = 0.15f)).padding(horizontal = 6.dp, vertical = 2.dp),
+    )
 }
