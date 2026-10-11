@@ -1,0 +1,15 @@
+{
+  "name": "ehi-macchina",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ehi-macchina",
+      // Segnaposto per lo sviluppo locale. Dopo `wrangler d1 create ehi-macchina`
+      // si sostituisce con l'id vero (vedi README).
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
