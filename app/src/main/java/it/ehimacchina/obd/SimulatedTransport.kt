@@ -10,7 +10,7 @@ import kotlin.math.sin
 class SimulatedTransport(private val clock: () -> Long = System::currentTimeMillis) : Transport {
     private val startMs = clock()
     private val supported = setOf(
-        0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x1F, 0x21, 0x2F, 0x33,
+        0x01, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x1F, 0x21, 0x2F, 0x33,
     )
 
     override suspend fun open() {}
@@ -25,8 +25,10 @@ class SimulatedTransport(private val clock: () -> Long = System::currentTimeMill
             c == "ATDP" -> "AUTO, ISO 15765-4 (CAN 11/500)"
             c == "ATRV" -> "%.1fV".format(13.8 + 0.3 * sin(t / 7))
             c.startsWith("AT") -> "OK"
-            c == "03" -> "NO DATA"
-            c.length == 4 && c.startsWith("01") -> mode01(c.substring(2).toInt(16), t)
+            c == "03" -> "43 01 01 33" // un codice memorizzato: P0133 (sonda O2 lenta)
+            c == "07" -> "47 00"
+            // 5 caratteri = suffisso "risposte attese" (es. 010C1)
+            (c.length == 4 || c.length == 5) && c.startsWith("01") -> mode01(c.substring(2, 4).toInt(16), t)
             else -> "?"
         }
     }
@@ -34,6 +36,7 @@ class SimulatedTransport(private val clock: () -> Long = System::currentTimeMill
     private fun mode01(pid: Int, t: Double): String {
         if (pid % 0x20 == 0) return maskResponse(pid)
         if (pid !in supported) return "NO DATA"
+        if (pid == 0x01) return "41 01 81 07 E5 00" // spia accesa, 1 codice
         val bytes: List<Int> = when (pid) {
             0x04 -> listOf((30 + 20 * sin(t / 5)).percent())
             0x05 -> listOf((85 + 5 * sin(t / 30) + 40).toInt())

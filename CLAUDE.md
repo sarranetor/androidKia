@@ -17,17 +17,19 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 
 ## Stato
 - **Fase 0: fatta e provata in auto (a motore spento).** App minima: connessione RFCOMM, init ELM, rilevamento PID, lettura continua, log raw, condivisione log, console debug nascosta (pressione lunga sul titolo), simulatore e riproduzione log.
-- Fasi 1–5: da fare.
+- **Fase 1: codice fatto, test PC ok, da provare su telefono/in auto.** Foreground service + `ObdEngine` (singleton, sopravvive a rotazione/chiusura Activity), riconnessione automatica (2/5/10 s), polling a priorità (`Poller`: veloci ogni ciclo, 2 lenti a rotazione, `ATRV` ogni 5 s), cruscotto orizzontale+verticale con avvisi (`Alerts`), diagnosi codici in sola lettura (0101 + modi 03/07, `Dtc.kt`) con lettura automatica alla connessione e pagina "Diagnosi". Suffisso "risposte attese" (`010C1`) provato all'avvio e tenuto solo se l'adattatore lo gestisce (vedi nota nel log).
+- Fasi 2–5: da fare (cancellazione codici con conferma, freeze frame modo 02, storico viaggi, consumi in fase 2).
 
 ## Struttura (`app/src/main/java/it/ehimacchina/obd/`)
 - `Transport.kt` interfaccia canale; `BluetoothTransport` (SPP, fallback canale 1 per cloni), `SimulatedTransport`, `ReplayTransport`, `LoggingTransport` (in `SessionLog.kt`).
 - `Elm327.kt` protocollo (senza dipendenze Android → testabile). `Pid.kt` tabella PID e decodifica.
-- `ObdViewModel.kt` + `MainActivity.kt` (Compose).
+- `ObdEngine.kt` (connessione, sessione, riconnessione, comandi in coda), `ObdService.kt` (notifica/foreground), `Poller.kt`, `Alerts.kt` (soglie: liquido 98/105 °C, batteria 12.0/11.5 V solo a motore acceso, >15 V), `Dtc.kt` (decodifica codici, `Diagnosis`), `MainActivity.kt` (Compose: connessione, cruscotto, diagnosi, debug).
 - Formato log (TAB): `epochMs  comando  risposta('|' = a capo)  durataMs`; righe `#ERR`/`#NOTE` per errori/note. Stesso formato letto dalla riproduzione.
 
 ## Decisioni
 - Accesso centralina **sola lettura**; `Elm327.isReadOnlyCommand` blocca il modo 04 e simili dalla console manuale. Cancellazione codici solo in fase 2, con conferma e auto ferma.
-- Fase 0 senza foreground service (arriva in fase 1): l'app deve restare in primo piano (schermo sempre acceso).
+- Soglie degli avvisi provvisorie: tarare con un log a motore acceso.
+- Risposta modo 03/07 su CAN: l'ELM mostra solo i byte reali; dopo `43`/`47` un numero dispari di byte = primo byte è il conteggio codici (da verificare col primo log reale con codici).
 - Il simulatore in-app sostituisce l'emulatore Python (niente codice doppio).
 
 ## Particolarità scoperte (log `app/src/test/resources/cee-d-ign-on-engine-off.log`, 11/10/2026, quadro acceso motore spento)

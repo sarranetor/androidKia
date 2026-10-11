@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
     <application
@@ -20,6 +24,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".ObdService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <!-- Serve per condividere i file di log con altre app -->
         <provider

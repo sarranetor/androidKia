@@ -25,6 +25,20 @@ class Elm327(
     /** Timeout lungo per ATZ e per la prima richiesta (ricerca protocollo). */
     var longTimeoutMs = 12000L
 
+    /** Timeout per la lettura dei codici errore (le risposte multi-frame sono più lente). */
+    var diagTimeoutMs = 5000L
+
+    /** Timeout consecutivi senza risposta: se sale, l'adattatore non risponde più (collegamento perso). */
+    var consecutiveTimeouts = 0
+        private set
+
+    /**
+     * Se vero le richieste del modo 01 finiscono con "1" (es. "010C1"): l'ELM sa che aspetta
+     * una sola risposta e non perde tempo. Attivato da [tryResponseCount] solo se l'adattatore lo gestisce.
+     */
+    var useResponseCount = false
+        private set
+
     /** Parole con cui l'ELM dice "niente dati / errore" (non sono dati veri). */
     private val errorWords = listOf(
         "NO DATA", "UNABLE TO CONNECT", "STOPPED", "CAN ERROR", "BUS ERROR",
@@ -38,8 +52,16 @@ class Elm327(
             .filter { it.isNotEmpty() && !it.startsWith("SEARCHING") }
 
     /** Invia un comando e ritorna le righe pulite. */
-    suspend fun send(cmd: String, timeout: Long = timeoutMs): List<String> =
-        cleanLines(transport.exchange(cmd, timeout))
+    suspend fun send(cmd: String, timeout: Long = timeoutMs): List<String> {
+        try {
+            val lines = cleanLines(transport.exchange(cmd, timeout))
+            consecutiveTimeouts = 0
+            return lines
+        } catch (e: ObdTimeout) {
+            consecutiveTimeouts++
+            throw e
+        }
+    }
 
     /** Sequenza di inizializzazione. Ritorna un testo con l'esito (per il log/UI). */
     suspend fun init() {
@@ -78,8 +100,8 @@ class Elm327(
      * Richiesta modo 01. Ritorna i byte di dati (senza "41 xx") oppure null se
      * l'auto non risponde / dice NO DATA.
      */
-    suspend fun query(pid: Int, timeout: Long = timeoutMs): IntArray? {
-        val cmd = "01%02X".format(pid)
+    suspend fun query(pid: Int, timeout: Long = timeoutMs, countSuffix: Boolean = false): IntArray? {
+        val cmd = "01%02X".format(pid) + if (countSuffix) "1" else ""
         val lines = try {
             send(cmd, timeout)
         } catch (e: CancellationException) {
@@ -93,17 +115,48 @@ class Elm327(
 
     /** Tensione della batteria misurata dall'adattatore stesso (ATRV), es. "12.6V". */
     suspend fun batteryVoltage(): Double? {
-        val line = send("ATRV").firstOrNull() ?: return null
+        val line = try {
+            send("ATRV").firstOrNull()
+        } catch (e: ObdTimeout) {
+            null
+        } ?: return null
         return Regex("""(\d+(\.\d+)?)\s*V""", RegexOption.IGNORE_CASE)
             .find(line)?.groupValues?.get(1)?.toDoubleOrNull()
     }
 
     /** Legge e decodifica un PID noto. */
     suspend fun read(pid: Pid): Double? {
-        val data = query(pid.id) ?: return null
+        val data = query(pid.id, countSuffix = useResponseCount) ?: return null
         if (data.size < pid.bytes) return null
         return pid.decode(data)
     }
+
+    /** Prova il suffisso "una risposta attesa" su un PID supportato; lo tiene attivo solo se l'adattatore risponde bene. */
+    suspend fun tryResponseCount(): Boolean {
+        val pid = supportedPids.firstOrNull { it == 0x0C } ?: supportedPids.firstOrNull { Pids.get(it) != null } ?: return false
+        useResponseCount = query(pid, countSuffix = true)?.let { it.size >= (Pids.get(pid)?.bytes ?: 1) } == true
+        log("Suffisso risposte attese: ${if (useResponseCount) "attivo" else "non supportato"}")
+        return useResponseCount
+    }
+
+    /** Diagnosi in sola lettura: stato spia (0101), codici memorizzati (03) e pendenti (07). */
+    suspend fun readDiagnosis(): Diagnosis {
+        val status = query(0x01, diagTimeoutMs)
+        return Diagnosis(
+            milOn = status?.let { it[0] and 0x80 != 0 },
+            reportedCount = status?.let { it[0] and 0x7F },
+            stored = readDtcs("03", 0x43),
+            pending = readDtcs("07", 0x47),
+            atMillis = System.currentTimeMillis(),
+        )
+    }
+
+    private suspend fun readDtcs(cmd: String, responseByte: Int): List<String>? =
+        try {
+            Dtc.parse(send(cmd, diagTimeoutMs), responseByte)
+        } catch (e: ObdTimeout) {
+            null
+        }
 
     companion object {
         /**
