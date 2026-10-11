@@ -120,3 +120,11 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - Confermato dall'utente: la spia motore NON si accende girando la chiave → P0650 = LED/lampadina/circuito spia (elettrauto). Per questo la spia non era mai stata vista.
 - Il meccanico abituale non usa volentieri la diagnosi: preparata scheda riassuntiva `~/Downloads/kia-ceed-diagnosi.html` (gravità + passi in ordine + frase per l'officina). Valvola canister difficile da raggiungere (sotto il collettore, vedi video i30 G4FA).
 - Idea in sospeso (offerta, non richiesta): pulsante «Scheda per l'officina» nell'app che genera il riepilogo aggiornato.
+
+### PROSSIMO LAVORO (concordato per il 12/10/2026): avvisi "spia sostitutiva" nell'app
+La spia motore reale non funziona (P0650). Da fare (prima piano breve + conferma, come da regole):
+- Durante la guida rileggere ogni ~60 s `0101` (stato spia + numero codici) e `07` (pendenti); `03` se il numero cambia.
+- Se compare un codice nuovo (memorizzato o pendente) o la spia passa ad accesa: banner rosso nel cruscotto, notifica ad alta priorità con suono anche a schermo bloccato (canale notifiche separato da quello del servizio), invio immediato al server.
+- Nessun avviso ripetuto per i codici già noti (P0650, P0172, P0420): solo per le novità.
+- Test con simulatore (codice nuovo che compare dopo N minuti) e con il log reale.
+- Valutare anche: avviso se l'app non è collegata da molti giorni? (solo se l'utente lo vuole)
