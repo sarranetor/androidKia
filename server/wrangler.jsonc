@@ -6,7 +6,7 @@
   "compatibility_flags": ["global_fetch_strictly_public"],
   "kv_namespaces": [
     // Token e client OAuth. Per lo sviluppo locale basta un id qualsiasi; in produzione: wrangler kv namespace create OAUTH_KV
-    { "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" }
+    { "binding": "OAUTH_KV", "id": "b77da07a62d14635984cd21657de25a2" }
   ],
   "d1_databases": [
     {
