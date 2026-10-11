@@ -26,7 +26,7 @@ class RealLogTest {
 
     @Test fun values() = runBlocking {
         val e = elm()
-        fun v(pid: Int) = e.read(Pids.get(pid)!!)!!
+        suspend fun v(pid: Int) = e.read(Pids.get(pid)!!)!!
         assertEquals(18.0, v(0x05), 0.001)   // liquido
         assertEquals(0.0, v(0x0C), 0.001)    // giri: motore spento
         assertEquals(100.0, v(0x0B), 0.001)  // MAP ~ pressione ambiente
