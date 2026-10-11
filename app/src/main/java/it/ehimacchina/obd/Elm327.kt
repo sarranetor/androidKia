@@ -190,19 +190,21 @@ class Elm327(
     /** Diagnosi in sola lettura: stato spia (0101), codici memorizzati (03) e pendenti (07), freeze frame (02). */
     suspend fun readDiagnosis(): Diagnosis {
         val status = query(0x01, diagTimeoutMs)
-        val milOn = status?.let { it[0] and 0x80 != 0 }
+            ?: // centralina muta (quadro spento): "NO DATA" qui NON vuol dire "nessun codice", vuol dire "non so"
+            return Diagnosis(null, null, null, null, System.currentTimeMillis())
+        val milOn = status[0] and 0x80 != 0
         val stored = readDtcs("03", 0x43)
         val pending = readDtcs("07", 0x47)
         // il freeze frame ha senso solo se c'è almeno un codice
-        val hasCodes = milOn == true || !stored.isNullOrEmpty() || !pending.isNullOrEmpty()
+        val hasCodes = milOn || !stored.isNullOrEmpty() || !pending.isNullOrEmpty()
         return Diagnosis(
             milOn = milOn,
-            reportedCount = status?.let { it[0] and 0x7F },
+            reportedCount = status[0] and 0x7F,
             stored = stored,
             pending = pending,
             atMillis = System.currentTimeMillis(),
             freezeFrame = if (hasCodes) readFreezeFrame() else null,
-            readiness = status?.let { Readiness.parse(it) },
+            readiness = Readiness.parse(status),
         )
     }
 

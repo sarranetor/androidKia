@@ -66,6 +66,16 @@ class DriveTestAnalyzer(val startMs: Long) {
     private fun isWarm(s: Sample) = (s.get(0x05) ?: 0.0) >= WARM_C
     private fun isRunning(s: Sample) = (s.get(0x0C) ?: 0.0) >= Alerts.ENGINE_RUNNING_RPM
     private fun isCruise(s: Sample) = isRunning(s) && isWarm(s) && (s.get(0x0D) ?: 0.0) in 50.0..110.0
+
+    /**
+     * Crociera a regime stabile: se il lambda comandato (PID 44) è disponibile, solo quando vale ~1.
+     * Nei tagli d'iniezione in rilascio (λ 2) e negli arricchimenti le due sonde vanno insieme a magro/ricco
+     * anche con un catalizzatore sano: confrontarle lì falserebbe la prova.
+     */
+    private fun isSteadyCruise(s: Sample) = isCruise(s) && (s.get(0x44)?.let { it in 0.97..1.03 } ?: true)
+
+    /** Quante volte la tensione attraversa 0,45 V (passaggio ricco/magro). */
+    private fun crossings(values: List<Double>) = values.zipWithNext().count { (a, b) -> (a - 0.45) * (b - 0.45) < 0 }
     private fun isWarmIdle(s: Sample) =
         isRunning(s) && (s.get(0x0D) ?: 0.0) == 0.0 && (s.get(0x05) ?: 0.0) >= 70.0 && (s.get(0x0C) ?: 0.0) <= 1300.0
 
@@ -168,11 +178,15 @@ class DriveTestAnalyzer(val startMs: Long) {
             }
         }
 
-        // --- efficienza catalizzatore: confronto sonda a valle / a monte in crociera calda
-        val pre = stats(cruise.mapNotNull { it.get(0x14) })
-        val post = stats(cruise.mapNotNull { it.get(0x15) })
+        // --- efficienza catalizzatore: confronto sonda a valle / a monte in crociera calda e stabile.
+        // Catalizzatore sano: la sonda a valle resta quasi ferma (~0,6–0,7 V). Esaurito: copia le oscillazioni di quella a monte.
+        val steady = samples.filter { isSteadyCruise(it) }
+        val preVals = steady.mapNotNull { s -> s.get(0x14)?.takeIf { s.get(0x15) != null } }
+        val postVals = steady.mapNotNull { s -> s.get(0x15)?.takeIf { s.get(0x14) != null } }
+        val pre = stats(preVals)
+        val post = stats(postVals)
         if (pre != null && post != null && min(pre.n, post.n) >= 60) {
-            data += "Crociera calda: sonda a valle media %.2f V, deviazione %.2f V (a monte %.2f V)".format(post.mean, post.std, pre.std)
+            data += "Crociera calda stabile (%d campioni): sonda a valle media %.2f V, deviazione %.2f V (a monte %.2f V)".format(post.n, post.mean, post.std, pre.std)
             when {
                 post.std < 0.02 && post.mean in 0.43..0.48 ->
                     add(FindingLevel.INFO, "La sonda a valle resta ferma a ~0.45 V: sonda non attiva o guasta. Con questo dato non posso valutare il catalizzatore (P0420 resta da verificare in officina).")
@@ -180,16 +194,18 @@ class DriveTestAnalyzer(val startMs: Long) {
                     add(FindingLevel.INFO, "La sonda a monte è troppo ferma in crociera per confrontare le due sonde.")
                 else -> {
                     val ratio = post.std / pre.std
-                    data += "Rapporto oscillazione valle/monte: %.2f".format(ratio)
+                    val preX = crossings(preVals)
+                    val crossRatio = if (preX > 0) crossings(postVals).toDouble() / preX else 0.0
+                    data += "Rapporto oscillazione valle/monte: %.2f · passaggi ricco/magro valle/monte: %.2f".format(ratio, crossRatio)
                     when {
-                        ratio < 0.4 -> add(FindingLevel.OK, "Catalizzatore: la sonda a valle è molto più stabile di quella a monte (rapporto %.2f): efficienza buona.".format(ratio))
-                        ratio < 0.7 -> add(FindingLevel.INFO, "Catalizzatore: rapporto %.2f, zona intermedia; da tenere d'occhio, ripeti il test.".format(ratio))
-                        else -> add(FindingLevel.ATTENZIONE, "Catalizzatore: la sonda a valle segue quella a monte (rapporto %.2f): efficienza bassa, compatibile con P0420. Da far verificare in officina.".format(ratio))
+                        ratio >= 0.7 || crossRatio >= 0.6 -> add(FindingLevel.ATTENZIONE, "Catalizzatore: la sonda a valle copia quella a monte anche a regime stabile (oscillazione %.2f, passaggi %.2f): il catalizzatore trattiene poco ossigeno, efficienza bassa, coerente con P0420. Da far verificare in officina.".format(ratio, crossRatio))
+                        ratio < 0.4 && crossRatio < 0.3 -> add(FindingLevel.OK, "Catalizzatore: la sonda a valle è molto più stabile di quella a monte (rapporto %.2f): efficienza buona.".format(ratio))
+                        else -> add(FindingLevel.INFO, "Catalizzatore: valori intermedi (oscillazione %.2f, passaggi %.2f); da tenere d'occhio, ripeti il test.".format(ratio, crossRatio))
                     }
                 }
             }
         } else {
-            add(FindingLevel.INFO, "Dati insufficienti per valutare il catalizzatore: servono almeno ~1 min a 50–110 km/h con motore caldo (e le sonde O2 supportate).")
+            add(FindingLevel.INFO, "Dati insufficienti per valutare il catalizzatore: servono almeno ~1 min a 50–110 km/h con motore caldo e andatura costante (e le sonde O2 supportate).")
         }
 
         // --- temperatura catalizzatore
@@ -199,23 +215,53 @@ class DriveTestAnalyzer(val startMs: Long) {
             if (catMax < 350) add(FindingLevel.INFO, "Il catalizzatore è arrivato a soli %.0f °C: troppo freddo per una prova valida (serve oltre 400 °C).".format(catMax))
         }
 
-        // --- correzioni carburante
+        // --- correzioni carburante, al minimo e in marcia separatamente (un difetto può vedersi solo al minimo)
         fun trimTotal(group: List<Sample>) = stats(group.mapNotNull { s ->
             val st = s.get(0x06); val lt = s.get(0x07)
             if (st != null && lt != null) st + lt else null
         })
+        val idle = samples.filter { isWarmIdle(it) }
         val trimCruise = trimTotal(cruise)
-        val trimIdle = trimTotal(samples.filter { isWarmIdle(it) })
+        val trimIdle = trimTotal(idle)
         val ltft = stats(warm.mapNotNull { it.get(0x07) })
         trimIdle?.let { data += "Correzione carburante totale al minimo: %+.1f %%".format(it.mean) }
         trimCruise?.let { data += "Correzione carburante totale in crociera: %+.1f %%".format(it.mean) }
         ltft?.let { data += "Correzione di lungo periodo (LTFT): %+.1f %%".format(it.mean) }
-        val trimMain = trimCruise?.takeIf { it.n >= 30 } ?: trimIdle?.takeIf { it.n >= 30 }
-        if (trimMain != null) {
-            when {
-                trimMain.mean <= -10 -> add(FindingLevel.ATTENZIONE, "La centralina toglie in media %.0f %% di carburante: coerente con miscela ricca (P0172): iniettori, sonda, pressione benzina o EVAP.".format(-trimMain.mean))
-                trimMain.mean >= 10 -> add(FindingLevel.ATTENZIONE, "La centralina aggiunge in media %.0f %% di carburante: miscela povera o aria falsa.".format(trimMain.mean))
-                else -> add(FindingLevel.OK, "Correzioni carburante nella norma (%+.1f %% in media): in questo test non vedo miscela ricca/povera persistente.".format(trimMain.mean))
+        var trimProblem = false
+        for ((where, t) in listOf("al minimo" to trimIdle, "in marcia" to trimCruise)) {
+            if (t == null || t.n < 30) continue
+            if (t.mean <= -10) {
+                trimProblem = true
+                add(FindingLevel.ATTENZIONE, "%s la centralina toglie in media il %.0f %% di carburante: miscela ricca %s, coerente con P0172 (cause tipiche: iniettore che gocciola, valvola EVAP, pressione benzina, sonda).".format(where.replaceFirstChar { it.uppercase() }, -t.mean, where))
+            } else if (t.mean >= 10) {
+                trimProblem = true
+                add(FindingLevel.ATTENZIONE, "%s la centralina aggiunge in media il %.0f %% di carburante: miscela povera o aria falsa.".format(where.replaceFirstChar { it.uppercase() }, t.mean))
+            }
+        }
+        if (!trimProblem && (trimIdle?.n ?: 0) + (trimCruise?.n ?: 0) >= 30) {
+            add(FindingLevel.OK, "Correzioni carburante nella norma (minimo %s, marcia %s).".format(
+                trimIdle?.let { "%+.1f %%".format(it.mean) } ?: "—", trimCruise?.let { "%+.1f %%".format(it.mean) } ?: "—"))
+        }
+
+        // --- comportamento al minimo a motore caldo: sonda a monte e regolazione
+        if (idle.size >= 60) {
+            val o2 = idle.mapNotNull { it.get(0x14) }
+            val richShare = if (o2.isEmpty()) 0.0 else o2.count { it > 0.7 }.toDouble() / o2.size
+            val stft = stats(idle.mapNotNull { it.get(0x06) })
+            val loop = idle.mapNotNull { it.get(0x03) }
+            if (loop.size >= 30) {
+                val closed = loop.count { it.toInt() == 2 }.toDouble() / loop.size
+                data += "Al minimo caldo: anello chiuso %.0f %% del tempo".format(closed * 100)
+                if (closed < 0.5) {
+                    val faultShare = loop.count { it.toInt() == 8 }.toDouble() / loop.size
+                    add(FindingLevel.ATTENZIONE, "Al minimo a motore caldo la centralina lavora in anello aperto per il %.0f %% del tempo%s: non usa la sonda per dosare la benzina.".format(
+                        (1 - closed) * 100, if (faultShare > 0.3) " (per un guasto rilevato)" else ""))
+                }
+            }
+            if (o2.size >= 60 && richShare >= 0.9) {
+                data += "Al minimo caldo: sonda a monte sul ricco (> 0,7 V) per il %.0f %% del tempo, media %.2f V".format(richShare * 100, o2.average())
+                add(FindingLevel.ATTENZIONE, "Al minimo la sonda a monte resta sempre sul ricco (media %.2f V) invece di oscillare: miscela ricca al minimo%s. Coerente con P0172.".format(
+                    o2.average(), if (stft != null && stft.std < 0.5) " e correzione breve ferma (la centralina non riesce o non prova a correggere)" else ""))
             }
         }
 

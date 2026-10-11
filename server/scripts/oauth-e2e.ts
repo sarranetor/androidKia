@@ -49,7 +49,7 @@ Object.entries({
 }).forEach(([k, v]) => authUrl.searchParams.set(k, v));
 const page = await fetch(authUrl, { redirect: "manual" });
 assert.equal(page.status, 200);
-const cookies = page.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
+const cookies = (page.headers as unknown as { getSetCookie(): string[] }).getSetCookie().map((c: string) => c.split(";")[0]).join("; ");
 assert.ok(cookies.length > 0, "cookie di consenso mancante");
 const html = await page.text();
 assert.match(html, /Collega «Claude»/);

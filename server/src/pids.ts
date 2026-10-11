@@ -1,5 +1,6 @@
 // Nomi italiani dei PID che l'app invia (stessi nomi di Pid.kt nell'app Android).
 export const PIDS: Record<string, { nome: string; unita: string }> = {
+  "03": { nome: "stato sistema carburante (1 aperto freddo, 2 anello chiuso, 4 aperto per guida, 8 aperto per guasto)", unita: "" },
   "04": { nome: "carico motore", unita: "%" },
   "05": { nome: "temperatura liquido", unita: "°C" },
   "06": { nome: "correzione carburante breve (STFT)", unita: "%" },

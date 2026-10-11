@@ -16,6 +16,9 @@ class Pid(
 
 object Pids {
     val all: List<Pid> = listOf(
+        // Stato sistema carburante (banco 1): 1 = anello aperto (motore freddo), 2 = anello chiuso (regola con la sonda),
+        // 4 = anello aperto per condizioni di guida (rilascio/pieno carico), 8 = anello aperto per guasto, 16 = chiuso ma sonda in errore
+        Pid(0x03, "Stato sistema carburante", "", 1, false) { it[0].toDouble() },
         Pid(0x04, "Carico motore", "%", 1, true) { it[0] * 100.0 / 255 },
         Pid(0x05, "Temp. liquido", "°C", 1, false) { it[0] - 40.0 },
         Pid(0x06, "Correz. carb. breve B1", "%", 1, false) { (it[0] - 128) * 100.0 / 128 },

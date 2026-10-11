@@ -81,28 +81,46 @@ export function evaluateHealth(input: {
     }
   }
 
-  // --- correzioni carburante (motore caldo)
-  const trims = running
-    .filter((s) => (s.coolant ?? 0) >= SOGLIE.caldo)
-    .map((s) => parseValues(s.values_json))
-    .filter((v) => typeof v["06"] === "number" && typeof v["07"] === "number");
-  if (trims.length >= 3) {
-    const stft = mean(trims.map((v) => v["06"]));
-    const ltft = mean(trims.map((v) => v["07"]));
+  // --- correzioni carburante (motore caldo), al minimo e in marcia separate: un difetto può vedersi solo al minimo
+  const warm = running.filter((s) => (s.coolant ?? 0) >= SOGLIE.caldo);
+  const trimsOf = (group: SnapshotRow[]) =>
+    group.map((s) => parseValues(s.values_json)).filter((v) => typeof v["06"] === "number" && typeof v["07"] === "number");
+  const idleWarm = warm.filter((s) => (s.speed ?? 1) === 0);
+  const moving = warm.filter((s) => (s.speed ?? 0) > 0);
+  let trimProblem = false;
+  const dettagli: string[] = [];
+  for (const [dove, group] of [["al minimo", idleWarm], ["in marcia", moving]] as const) {
+    const t = trimsOf(group);
+    if (t.length < 3) continue;
+    const stft = mean(t.map((v) => v["06"]));
+    const ltft = mean(t.map((v) => v["07"]));
     const tot = stft + ltft;
     const dett = `breve ${round(stft, 1)} %, lunga ${round(ltft, 1)} %, totale ${round(tot, 1)} %`;
+    dettagli.push(`${dove}: ${dett}`);
     const abs = Math.abs(tot);
     if (abs >= SOGLIE.correzioneAttenzione) {
-      const ricca = tot < 0;
+      trimProblem = true;
       problemi.push({
         livello: abs >= SOGLIE.correzioneCritica ? "critico" : "attenzione",
         area: "miscela / correzioni carburante",
-        messaggio: ricca
-          ? `La centralina toglie carburante (${dett}): coerente con miscela ricca (tipo P0172).`
-          : `La centralina aggiunge carburante (${dett}): coerente con miscela povera o aria falsa (tipo P0171).`,
+        messaggio: tot < 0
+          ? `${dove[0].toUpperCase()}${dove.slice(1)} la centralina toglie carburante (${dett}): miscela ricca ${dove}, coerente con P0172.`
+          : `${dove[0].toUpperCase()}${dove.slice(1)} la centralina aggiunge carburante (${dett}): miscela povera o aria falsa (tipo P0171).`,
       });
-    } else {
-      ok.push(`Correzioni carburante nella norma (${dett}).`);
+    }
+  }
+  if (!trimProblem && dettagli.length > 0) ok.push(`Correzioni carburante nella norma (${dettagli.join("; ")}).`);
+
+  // --- al minimo la sonda a monte dovrebbe oscillare; se resta sempre sul ricco la miscela è ricca
+  const o2Idle = idleWarm.map((s) => parseValues(s.values_json)["14"]).filter((v): v is number => typeof v === "number");
+  if (o2Idle.length >= 5) {
+    const richShare = o2Idle.filter((v) => v > 0.7).length / o2Idle.length;
+    if (richShare >= 0.9) {
+      problemi.push({
+        livello: "attenzione",
+        area: "sonda lambda / miscela",
+        messaggio: `Al minimo la sonda a monte resta sul ricco (media ${round(mean(o2Idle), 2)} V nel ${Math.round(richShare * 100)} % dei campioni) invece di oscillare: miscela ricca al minimo, coerente con P0172.`,
+      });
     }
   }
 

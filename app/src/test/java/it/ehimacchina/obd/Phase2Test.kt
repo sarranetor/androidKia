@@ -12,6 +12,12 @@ class FreezeFrameTest {
         assertNull(Elm327.parseResponse(listOf("41 0C 0F A0"), 0x42, 0x0C, 0))
     }
 
+    @Test fun freezeBelongsOnlyToItsCode() {
+        val ff = FreezeFrame("P0650", mapOf(0x0C to 0.0))
+        assertNotNull(ff.textFor("P0650"))
+        assertNull(ff.textFor("P0172"))
+    }
+
     @Test fun textRoundTrip() {
         val ff = FreezeFrame("P0172", mapOf(0x0C to 2100.0, 0x05 to 88.0))
         assertEquals(ff, FreezeFrame.fromText(ff.toText()))

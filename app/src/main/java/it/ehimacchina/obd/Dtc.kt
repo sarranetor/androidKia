@@ -19,6 +19,9 @@ data class Diagnosis(
 
 /** Freeze frame: il codice che l'ha causato e i valori (chiave = PID) letti in quel momento. */
 data class FreezeFrame(val code: String, val values: Map<Int, Double>) {
+    /** Il freeze frame va salvato solo sul codice che l'ha causato, non su tutti. */
+    fun textFor(dtc: String): String? = if (dtc == code) toText() else null
+
     /** Testo per il database: "P0172;05=88.0;0C=2100.0" */
     fun toText(): String = (listOf(code) + values.map { (k, v) -> "%02X=%s".format(k, v) }).joinToString(";")
 

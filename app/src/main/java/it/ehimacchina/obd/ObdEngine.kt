@@ -103,6 +103,7 @@ object ObdEngine {
     private var drive: DriveTestAnalyzer? = null
     private var driveStartDiag: Diagnosis? = null
     private var lastReadinessMs = 0L
+    private var driveSilentSinceMs = 0L
 
     val db: AppDatabase get() = AppDatabase.get(app)
     private val currentLog = MutableStateFlow<SessionLog?>(null)
@@ -306,7 +307,7 @@ object ObdEngine {
         // durante il test di guida: sonde O2 e giri a ogni ciclo, 3 PID lenti a rotazione
         fun known(ids: List<Int>) = ids.filter { it in supported }.mapNotNull { Pids.get(it) }
         val drivePoller = Poller(
-            elm, known(listOf(0x14, 0x15, 0x0C, 0x0D, 0x04, 0x0B)), known(listOf(0x05, 0x06, 0x07, 0x3C, 0x44, 0x0F, 0x43)), 3,
+            elm, known(listOf(0x14, 0x15, 0x0C, 0x0D, 0x04, 0x0B)), known(listOf(0x03, 0x05, 0x06, 0x07, 0x3C, 0x44, 0x0F, 0x43)), 3,
         )
         var lastBattery = 0L
         // all'avvio una diagnosi automatica, così il cruscotto sa subito se ci sono codici
@@ -378,6 +379,16 @@ object ObdEngine {
         val d = drive ?: return
         val now = System.currentTimeMillis()
         val s = _state.value
+        if (s.values.isEmpty()) {
+            // quadro spento: si chiude il test prima di raccogliere solo "NO DATA"
+            if (driveSilentSinceMs == 0L) driveSilentSinceMs = now
+            if (now - driveSilentSinceMs >= 30_000) {
+                finishDrive(elm)
+                driveSilentSinceMs = 0L
+            }
+            return
+        }
+        driveSilentSinceMs = 0L
         d.add(now, s.values, s.battery)
         if (now - lastReadinessMs >= 10_000) {
             lastReadinessMs = now
@@ -442,16 +453,19 @@ object ObdEngine {
 
     /** Salva nello storico i codici visti (con freeze frame, se c'è e non era già salvato) e avvisa il server. */
     private suspend fun recordDiagnosis(d: Diagnosis) {
+        if (d.milOn == null && d.stored == null) return // centralina non raggiungibile: niente da registrare
         val dao = db.dao()
-        val freeze = d.freezeFrame?.toText()
         val all = (d.stored.orEmpty().map { it to "memorizzato" } + d.pending.orEmpty().map { it to "pendente" })
             .distinctBy { it.first }
         for ((code, kind) in all) {
             val open = dao.openDtc(code)
+            val freeze = d.freezeFrame?.textFor(code)
             if (open == null) {
                 dao.insertDtc(DtcEntity(code = code, kind = kind, firstSeenMs = d.atMillis, lastSeenMs = d.atMillis, clearedMs = null, freeze = freeze))
             } else {
-                dao.updateDtc(open.copy(kind = kind, lastSeenMs = d.atMillis, freeze = open.freeze ?: freeze))
+                // ripara anche i freeze frame salvati per errore sul codice sbagliato (versioni precedenti)
+                val keep = open.freeze?.takeIf { it.startsWith(code) }
+                dao.updateDtc(open.copy(kind = kind, lastSeenMs = d.atMillis, freeze = keep ?: freeze))
             }
         }
         // codici aperti che la centralina non riporta più: spariti da soli (o cancellati altrove)

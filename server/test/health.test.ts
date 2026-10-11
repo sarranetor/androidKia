@@ -78,3 +78,14 @@ test("problemi ordinati per gravità", () => {
   assert.deepEqual(order, [...order].sort((a, b) => ({ critico: 0, attenzione: 1, info: 2 }[a] - { critico: 0, attenzione: 1, info: 2 }[b])));
   assert.equal(h.esito, "critico");
 });
+
+test("miscela ricca solo al minimo: non nascosta dalla media in marcia (caso reale Cee'd)", () => {
+  const idle = many(20, { speed: 0, rpm: 660, coolant: 92 }, { "06": -18.75, "07": -0.78, "14": 0.86 });
+  const cruise = Array.from({ length: 40 }, (_, i) => snap({ ts: NOW - 1_000_000 - i * 15000, speed: 90, rpm: 2400 }, { "06": -1, "07": 0, "14": i % 2 ? 0.1 : 0.8 }));
+  const h = evaluateHealth({ ...base, snapshots: [...idle, ...cruise] });
+  const msgs = h.problemi.map((p) => p.messaggio).join("\n");
+  assert.match(msgs, /Al minimo la centralina toglie carburante/);
+  assert.match(msgs, /sonda a monte resta sul ricco/);
+  assert.doesNotMatch(msgs, /In marcia la centralina/);
+  assert.equal(h.esito, "attenzione");
+});
