@@ -115,3 +115,8 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - Eventi al server con `"simulated": true` (solo se l'interruttore è acceso). Server migrazione `0002_simulated.sql`: colonna `simulated` su snapshots/trips/dtc/drive_reports; lo stato simulato va in `meta.status_sim`; `D1Repo` e `/api/latest` filtrano sempre `simulated = 0`.
 - Nuova vista «Prova al minimo» (`IdleMonitor.kt`, pagina IDLE da Codici): sonda a monte, STFT/LTFT, PID 03 in diretta con grafici 2 min (`Sparkline`), riassunto 30 s (correzione totale, tempo sul ricco, passaggi/min, anello chiuso) e «Fotografa» per confronto prima/dopo (prova tubo canister). Poller dedicato: 14, 06, 0C a ogni ciclo.
 - PID 03 (stato sistema carburante) ora decodificato e letto.
+
+### Stato diagnosi (11/10/2026 sera)
+- Confermato dall'utente: la spia motore NON si accende girando la chiave → P0650 = LED/lampadina/circuito spia (elettrauto). Per questo la spia non era mai stata vista.
+- Il meccanico abituale non usa volentieri la diagnosi: preparata scheda riassuntiva `~/Downloads/kia-ceed-diagnosi.html` (gravità + passi in ordine + frase per l'officina). Valvola canister difficile da raggiungere (sotto il collettore, vedi video i30 G4FA).
+- Idea in sospeso (offerta, non richiesta): pulsante «Scheda per l'officina» nell'app che genera il riepilogo aggiornato.
