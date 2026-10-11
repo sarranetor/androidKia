@@ -18,17 +18,20 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 ## Stato
 - **Fase 0: fatta e provata in auto (a motore spento).** App minima: connessione RFCOMM, init ELM, rilevamento PID, lettura continua, log raw, condivisione log, console debug nascosta (pressione lunga sul titolo), simulatore e riproduzione log.
 - **Fase 1: fatta e provata in auto (log 2, fermo al minimo).** Foreground service + `ObdEngine` (singleton, sopravvive a rotazione/chiusura Activity), riconnessione automatica (2/5/10 s), polling a priorità (`Poller`: veloci ogni ciclo, 2 lenti a rotazione, `ATRV` ogni 5 s), cruscotto orizzontale+verticale con avvisi (`Alerts`), diagnosi codici in sola lettura (0101 + modi 03/07, `Dtc.kt`) con lettura automatica alla connessione e pagina "Diagnosi". Suffisso "risposte attese" (`010C1`) provato all'avvio e tenuto solo se l'adattatore lo gestisce (vedi nota nel log).
-- **Fase 2 (in pianificazione)**: freeze frame (modo 02, PRIMA della cancellazione), cancellazione codici con conferma, Room (campioni/viaggi/codici), consumi speed-density, storico viaggi, rifornimenti. **Fase 2b: "Test di guida diagnostico" (15–20 min)**, vedi sotto.
+- **Fase 2: codice fatto, test PC ok, da provare in auto.** Freeze frame (modo 02) letto con la diagnosi, cancellazione codici (modo 04) con doppio controllo (`ClearGuard` + dialogo di conferma; salva prima codici e freeze frame nello storico), Room (`Db.kt`: viaggi, campioni ogni 2 s, storico codici, rifornimenti), consumi speed-density (`Consumption.kt`, VE 0.85, fattore di taratura da rifornimenti = litri + km dal pieno precedente, `Calibration`), `TripTracker` (viaggio = giri>400, fine dopo 2 min a motore spento), pagine Consumi e Codici/storico, cruscotto a 10 riquadri (+consumo istantaneo e media viaggio).
+- **Fase 2b (da fare, consegna separata): "Test di guida diagnostico" (15–20 min)**, vedi Decisioni.
 - Fasi 3–5: da fare.
 
 ## Struttura (`app/src/main/java/it/ehimacchina/obd/`)
 - `Transport.kt` interfaccia canale; `BluetoothTransport` (SPP, fallback canale 1 per cloni), `SimulatedTransport`, `ReplayTransport`, `LoggingTransport` (in `SessionLog.kt`).
 - `Elm327.kt` protocollo (senza dipendenze Android → testabile). `Pid.kt` tabella PID e decodifica.
+- `Db.kt` (Room), `Consumption.kt` (stima consumi, `Calibration`, `ClearGuard`), `TripTracker.kt`.
 - `ObdEngine.kt` (connessione, sessione, riconnessione, comandi in coda), `ObdService.kt` (notifica/foreground), `Poller.kt`, `Alerts.kt` (soglie: liquido 98/105 °C, batteria 12.0/11.5 V solo a motore acceso, >15 V), `Dtc.kt` (decodifica codici, `Diagnosis`), `MainActivity.kt` (Compose: connessione, cruscotto, diagnosi, debug).
 - Formato log (TAB): `epochMs  comando  risposta('|' = a capo)  durataMs`; righe `#ERR`/`#NOTE` per errori/note. Stesso formato letto dalla riproduzione.
 
 ## Decisioni
-- Accesso centralina **sola lettura**; `Elm327.isReadOnlyCommand` blocca il modo 04 e simili dalla console manuale. Cancellazione codici solo in fase 2, con conferma e auto ferma.
+- Accesso centralina **sola lettura**, eccetto la cancellazione codici: `Elm327.clearCodes()` (modo 04) è chiamata solo da `ObdEngine.clearCodes` dopo dialogo di conferma, con auto ferma (velocità 0) e motore spento (giri<400), controllo rifatto al momento dell'invio. `Elm327.isReadOnlyCommand` continua a bloccare il modo 04 dalla console manuale.
+- Consumi: stima non tarata salvata nel DB (`fuelL`), la taratura si applica al volo (si può ricalcolare). Fuel-cut in decelerazione non gestito (sovrastima lieve).
 - Soglie degli avvisi provvisorie: tarare con un log a motore acceso.
 - Risposta modo 03/07 su CAN: l'ELM mostra solo i byte reali; dopo `43`/`47` un numero dispari di byte = primo byte è il conteggio codici (da verificare col primo log reale con codici).
 - **Test di guida diagnostico (richiesta utente)**: per una diagnosi serve guidare 15–20 min (monitor di prontezza + catalizzatore caldo). L'app registra la guida, segue i monitor `0101` (byte C=supportati, D=incompleti), confronta O2 B1S1/B1S2, correzioni carburante, tempo anello chiuso, temp. catalizzatore e liquido, e produce un rapporto con indizi (non verdetti). Salvato in DB ed esportabile (poi tool MCP `controllo_salute`).
@@ -53,3 +56,9 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - Non ancora verificati in auto: velocità in marcia, riconnessione dopo perdita Bluetooth, schermo bloccato col servizio, 0902 (VIN). Nessun gap/errore nel log.
 - A fine log, con quadro spento: `NO DATA` su tutti i PID (~250–340 ms l'uno). Il polling continua a 3 richieste/s: ok ma da pensare per il risparmio batteria (fase 5).
 - **Monitor di prontezza (da `0101` = `41 01 82 07 61 01`)**: motore a scintilla; supportati misfire/carburante/componenti (B=07, tutti completi), catalizzatore, sonda O2, riscaldatore O2 (C=61; EVAP non supportato). **D=01 → monitor del catalizzatore NON completato** (gli altri completi). Coerente con P0420 *pendente*: la centralina non ha ancora finito di valutare il catalizzatore; serve una guida a caldo per completarlo.
+
+### Da verificare in auto con la Fase 2
+- Risposta reale al freeze frame (`0202 00`, `0200 00`...): la Cee'd potrebbe non supportarlo (`NO DATA`) → in quel caso la UI non mostra la sezione.
+- Plausibilità consumi: al minimo ~0.5–1.5 L/h, crociera 90 km/h ~5–9 L/100 km. Se lontani, tarare con i rifornimenti.
+- Rilevamento viaggio (parte a motore acceso, finisce 2 min dopo lo spegnimento) e salvataggio nel DB.
+- Cancellazione codici: solo se si vuole davvero; il guasto P0172/P0650 può tornare.

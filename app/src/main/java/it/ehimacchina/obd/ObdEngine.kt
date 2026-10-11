@@ -7,6 +7,8 @@ import android.content.Context
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -29,6 +31,11 @@ enum class Mode(val label: String) {
     REPLAY("Riproduci log"),
 }
 
+/** Viaggio in corso, con consumo già tarato */
+data class TripInfo(val startMs: Long, val km: Double, val fuelL: Double) {
+    val avgLitersPer100Km: Double? get() = if (km >= 0.3) fuelL / km * 100 else null
+}
+
 data class UiState(
     val running: Boolean = false,
     val status: String = "Non connesso",
@@ -41,6 +48,14 @@ data class UiState(
     val diagnosis: Diagnosis? = null,
     val diagnosing: Boolean = false,
     val console: List<String> = emptyList(),
+    /** Viaggio in corso (null se il motore è spento) */
+    val trip: TripInfo? = null,
+    /** Consumo istantaneo tarato, L/h */
+    val litersPerHour: Double? = null,
+    /** Fattore di taratura dei consumi (1.0 = nessuna taratura) */
+    val calibration: Double = 1.0,
+    /** Messaggio una tantum per l'utente (es. esito cancellazione codici) */
+    val notice: String? = null,
 )
 
 /**
@@ -58,9 +73,19 @@ object ObdEngine {
     private sealed interface Command {
         data class Manual(val cmd: String) : Command
         data object Diagnose : Command
+        data object ClearCodes : Command
     }
 
     private val commands = Channel<Command>(Channel.UNLIMITED)
+
+    private val tracker = TripTracker()
+    private var tripId: Long? = null
+    private var lastSampleMs = 0L
+    private var lastTripSaveMs = 0L
+    /** Fattore di taratura dei consumi, ricalcolato dai rifornimenti */
+    private var calibration = 1.0
+
+    val db: AppDatabase get() = AppDatabase.get(app)
     private val currentLog = MutableStateFlow<SessionLog?>(null)
 
     /** Ultime righe scambiate con l'adattatore, per la schermata di debug. */
@@ -101,6 +126,7 @@ object ObdEngine {
 
         job = scope.launch {
             try {
+                refreshCalibration()
                 var attempt = 0
                 while (true) {
                     val transport = LoggingTransport(makeTransport(mode, deviceAddress, replayFile), log)
@@ -123,7 +149,8 @@ object ObdEngine {
                     delay(wait * 1000)
                 }
             } finally {
-                _state.update { it.copy(running = false) }
+                withContext(NonCancellable) { endTrip(tracker.finish(System.currentTimeMillis())) }
+                _state.update { it.copy(running = false, trip = null, litersPerHour = null) }
             }
         }
     }
@@ -147,6 +174,36 @@ object ObdEngine {
         if (_state.value.diagnosing) return
         _state.update { it.copy(diagnosing = true) }
         commands.trySend(Command.Diagnose)
+    }
+
+    /** Cancella i codici errore (modo 04). Il controllo auto ferma/motore spento è rifatto al momento dell'invio. */
+    fun requestClearCodes() {
+        commands.trySend(Command.ClearCodes)
+    }
+
+    fun dismissNotice() = _state.update { it.copy(notice = null) }
+
+    fun addRefuel(liters: Double, km: Double) {
+        scope.launch {
+            db.dao().insertRefuel(RefuelEntity(dateMs = System.currentTimeMillis(), liters = liters, km = km))
+            refreshCalibration()
+        }
+    }
+
+    fun deleteRefuel(id: Long) {
+        scope.launch {
+            db.dao().deleteRefuel(id)
+            refreshCalibration()
+        }
+    }
+
+    private suspend fun refreshCalibration() {
+        val dao = db.dao()
+        calibration = Calibration.factor(
+            dao.allRefuels().map { RefuelRec(it.dateMs, it.liters, it.km) },
+            dao.allTrips().map { TripRec(it.startMs, it.km, it.fuelL) },
+        )
+        _state.update { it.copy(calibration = calibration) }
     }
 
     @SuppressLint("MissingPermission") // permesso chiesto da MainActivity prima di arrivare qui
@@ -186,6 +243,7 @@ object ObdEngine {
                     it.copy(values = if (value == null) it.values - pid.id else it.values + (pid.id to value))
                 }
             }
+            trackTrip()
             if (System.currentTimeMillis() - lastBattery > 5000) {
                 lastBattery = System.currentTimeMillis()
                 val v = elm.batteryVoltage()
@@ -211,9 +269,114 @@ object ObdEngine {
                 }
                 Command.Diagnose -> {
                     val d = elm.readDiagnosis()
+                    recordDiagnosis(d)
                     _state.update { it.copy(diagnosis = d, diagnosing = false) }
                 }
+                Command.ClearCodes -> clearCodes(elm)
             }
+        }
+    }
+
+    /** Cancellazione codici: ricontrolla le condizioni, salva codici e freeze frame, poi invia "04". */
+    private suspend fun clearCodes(elm: Elm327) {
+        ClearGuard.check(_state.value.values)?.let { reason ->
+            _state.update { it.copy(notice = "Cancellazione annullata: $reason") }
+            return
+        }
+        // prima di perdere tutto: fotografia di codici e freeze frame nel database
+        val before = elm.readDiagnosis()
+        recordDiagnosis(before)
+        val ok = elm.clearCodes()
+        val dao = db.dao()
+        val now = System.currentTimeMillis()
+        if (ok) dao.openDtcs().forEach { dao.updateDtc(it.copy(clearedMs = now)) }
+        val after = elm.readDiagnosis()
+        _state.update {
+            it.copy(
+                diagnosis = after,
+                notice = if (ok) "Codici cancellati. I monitor di prontezza sono azzerati: servirà una guida per ricompletarli."
+                else "La centralina non ha confermato la cancellazione.",
+            )
+        }
+    }
+
+    /** Salva nello storico i codici visti (con freeze frame, se c'è e non era già salvato). */
+    private suspend fun recordDiagnosis(d: Diagnosis) {
+        val dao = db.dao()
+        val freeze = d.freezeFrame?.toText()
+        val all = (d.stored.orEmpty().map { it to "memorizzato" } + d.pending.orEmpty().map { it to "pendente" })
+            .distinctBy { it.first }
+        for ((code, kind) in all) {
+            val open = dao.openDtc(code)
+            if (open == null) {
+                dao.insertDtc(DtcEntity(code = code, kind = kind, firstSeenMs = d.atMillis, lastSeenMs = d.atMillis, clearedMs = null, freeze = freeze))
+            } else {
+                dao.updateDtc(open.copy(kind = kind, lastSeenMs = d.atMillis, freeze = open.freeze ?: freeze))
+            }
+        }
+        // codici aperti che la centralina non riporta più: spariti da soli (o cancellati altrove)
+        if (d.stored != null && d.pending != null) {
+            dao.openDtcs().filter { o -> all.none { it.first == o.code } }
+                .forEach { dao.updateDtc(it.copy(clearedMs = d.atMillis)) }
+        }
+    }
+
+    /** Aggiorna viaggio e consumi dopo ogni ciclo di lettura; salva su database. */
+    private suspend fun trackTrip() {
+        val now = System.currentTimeMillis()
+        val v = _state.value.values
+        when (val ev = tracker.tick(now, v)) {
+            is TripTracker.Event.Started -> {
+                tripId = db.dao().insertTrip(TripEntity(startMs = ev.startMs, endMs = now, km = 0.0, fuelL = 0.0, maxSpeed = 0.0))
+                lastSampleMs = now; lastTripSaveMs = now
+            }
+            is TripTracker.Event.Ended -> endTrip(ev)
+            null -> {}
+        }
+        val lph = Consumption.fuelLitersPerHour(v)?.times(calibration)
+        _state.update {
+            it.copy(
+                litersPerHour = lph,
+                trip = if (tracker.active) TripInfo(tracker.currentStartMs, tracker.km, tracker.fuelL * calibration) else null,
+            )
+        }
+        val id = tripId
+        if (id != null && tracker.active) {
+            if (now - lastSampleMs >= 2000) {
+                lastSampleMs = now
+                val s = _state.value
+                db.dao().insertSample(
+                    SampleEntity(
+                        tripId = id, tMs = now, rpm = v[0x0C], speed = v[0x0D], coolant = v[0x05],
+                        load = v[0x04], mapKpa = v[0x0B], battery = s.battery, lph = lph,
+                    ),
+                )
+            }
+            if (now - lastTripSaveMs >= 30_000) {
+                lastTripSaveMs = now
+                saveTrip(id, now, tracker.maxSpeed)
+            }
+        }
+    }
+
+    private suspend fun saveTrip(id: Long, endMs: Long, maxSpeed: Double = 0.0) {
+        db.dao().updateTrip(
+            TripEntity(id = id, startMs = tracker.currentStartMs, endMs = endMs, km = tracker.km, fuelL = tracker.fuelL, maxSpeed = maxSpeed),
+        )
+    }
+
+    /** Chiude il viaggio: salva il riepilogo (o scarta le accensioni trascurabili) e ricalcola la taratura. */
+    private suspend fun endTrip(ev: TripTracker.Event.Ended?) {
+        val id = tripId ?: return
+        tripId = null
+        val sm = ev?.summary ?: return
+        val dao = db.dao()
+        if (sm.worthSaving) {
+            dao.updateTrip(TripEntity(id, sm.startMs, sm.endMs, sm.km, sm.fuelL, sm.maxSpeed))
+            refreshCalibration()
+        } else {
+            dao.deleteSamples(id)
+            dao.deleteTrip(id)
         }
     }
 

@@ -80,10 +80,13 @@ class Elm327Test {
     }
 
     @Test fun simulatorEndToEnd() = runBlocking {
-        val elm = Elm327(SimulatedTransport())
+        var now = 0L
+        val elm = Elm327(SimulatedTransport { now })
+        now = 30_000 // 30 s dopo l'avvio: già in marcia
         elm.init()
         val pids = elm.detectSupportedPids()
-        assertTrue(0x0C in pids && 0x0D in pids && 0x10 in pids && 0x21 in pids)
+        assertTrue(0x0C in pids && 0x0D in pids && 0x21 in pids && 0x44 in pids)
+        assertFalse("il simulatore non ha il MAF, come la Cee'd", 0x10 in pids)
         val rpm = elm.read(Pids.get(0x0C)!!)!!
         assertTrue(rpm in 700.0..2300.0)
     }

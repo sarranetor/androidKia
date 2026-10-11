@@ -32,6 +32,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -41,7 +43,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private enum class Page { HOME, DIAGNOSIS, DEBUG }
+private enum class Page { HOME, DIAGNOSIS, CONSUMI, DEBUG }
 
 private val Red = Color(0xFFE53935)
 private val Yellow = Color(0xFFFFB300)
@@ -114,9 +116,20 @@ class MainActivity : ComponentActivity() {
 
         when {
             page == Page.DIAGNOSIS -> DiagnosisPage(ui) { page = Page.HOME }
+            page == Page.CONSUMI -> ConsumiPage(ui) { page = Page.HOME }
             page == Page.DEBUG -> DebugPage(ui) { page = Page.HOME }
-            ui.running -> Dashboard(ui, onDiagnosis = { page = Page.DIAGNOSIS }, onDebug = { page = Page.DEBUG })
-            else -> ConnectPage(ui, devices, onDebug = { page = Page.DEBUG })
+            ui.running -> Dashboard(
+                ui,
+                onDiagnosis = { page = Page.DIAGNOSIS },
+                onConsumi = { page = Page.CONSUMI },
+                onDebug = { page = Page.DEBUG },
+            )
+            else -> ConnectPage(
+                ui, devices,
+                onDiagnosis = { page = Page.DIAGNOSIS },
+                onConsumi = { page = Page.CONSUMI },
+                onDebug = { page = Page.DEBUG },
+            )
         }
     }
 
@@ -124,7 +137,10 @@ class MainActivity : ComponentActivity() {
 
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
-    private fun ConnectPage(ui: UiState, devices: List<BluetoothDevice>, onDebug: () -> Unit) {
+    private fun ConnectPage(
+        ui: UiState, devices: List<BluetoothDevice>,
+        onDiagnosis: () -> Unit, onConsumi: () -> Unit, onDebug: () -> Unit,
+    ) {
         var mode by rememberSaveable { mutableStateOf(Mode.SIMULATOR) }
         var address by rememberSaveable { mutableStateOf<String?>(null) }
         var replayName by rememberSaveable { mutableStateOf<String?>(null) }
@@ -165,6 +181,10 @@ class MainActivity : ComponentActivity() {
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onDiagnosis) { Text("Codici") }
+                OutlinedButton(onClick = onConsumi) { Text("Consumi") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
                     connect(mode, address, replayName?.let { n -> ObdEngine.logFiles().firstOrNull { it.name == n } })
                 }) { Text("Connetti") }
@@ -176,11 +196,11 @@ class MainActivity : ComponentActivity() {
 
     // ---- cruscotto
 
-    private class Tile(val label: String, val value: String, val unit: String, val color: Color, val big: Boolean)
+    private class Tile(val label: String, val value: String, val unit: String, val color: Color)
 
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
-    private fun Dashboard(ui: UiState, onDiagnosis: () -> Unit, onDebug: () -> Unit) {
+    private fun Dashboard(ui: UiState, onDiagnosis: () -> Unit, onConsumi: () -> Unit, onDebug: () -> Unit) {
         val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
         val v = ui.values
         val alerts = Alerts.evaluate(v, ui.battery, ui.diagnosis)
@@ -192,25 +212,44 @@ class MainActivity : ComponentActivity() {
         }
         fun num(pid: Int, decimals: Int = 0) = v[pid]?.let { "%.${decimals}f".format(it) } ?: "—"
 
-        val tiles = listOf(
-            Tile("GIRI", num(0x0C), "rpm", Color.White, true),
-            Tile("VELOCITÀ", num(0x0D), "km/h", Color.White, true),
-            Tile("LIQUIDO", num(0x05), "°C", levelColor(Alerts.coolantLevel(v[0x05])), true),
-            Tile("BATTERIA", ui.battery?.let { "%.1f".format(it) } ?: "—", "V",
-                levelColor(Alerts.batteryLevel(ui.battery, v[0x0C])), true),
-            Tile("CARICO", num(0x04), "%", Color.White, false),
-            Tile("FARFALLA", num(0x11), "%", Color.White, false),
-            Tile("ARIA ASPIRATA", num(0x0F), "°C", Color.White, false),
-            Tile("MAP", num(0x0B), "kPa", Color.White, false),
+        // consumo istantaneo: L/100 km in marcia, L/h da fermi
+        val l100 = Consumption.litersPer100Km(ui.litersPerHour, v[0x0D])
+        val instant = when {
+            l100 != null -> Tile("CONSUMO", "%.1f".format(l100), "L/100km", Color.White)
+            ui.litersPerHour != null -> Tile("CONSUMO", "%.1f".format(ui.litersPerHour), "L/h", Color.White)
+            else -> Tile("CONSUMO", "—", "L/100km", Color.White)
+        }
+        val trip = ui.trip
+        val tripAvg = Tile(
+            "MEDIA VIAGGIO",
+            trip?.avgLitersPer100Km?.let { "%.1f".format(it) } ?: "—",
+            if (trip != null) "L/100km · %.1f km".format(trip.km) else "L/100km",
+            Color.White,
         )
+
+        val tiles = listOf(
+            Tile("GIRI", num(0x0C), "rpm", Color.White),
+            Tile("VELOCITÀ", num(0x0D), "km/h", Color.White),
+            Tile("LIQUIDO", num(0x05), "°C", levelColor(Alerts.coolantLevel(v[0x05]))),
+            Tile("BATTERIA", ui.battery?.let { "%.1f".format(it) } ?: "—", "V",
+                levelColor(Alerts.batteryLevel(ui.battery, v[0x0C]))),
+            instant,
+            tripAvg,
+            Tile("CARICO", num(0x04), "%", Color.White),
+            Tile("ARIA ASPIRATA", num(0x0F), "°C", Color.White),
+            Tile("MAP", num(0x0B), "kPa", Color.White),
+            Tile("FARFALLA", num(0x11), "%", Color.White),
+        )
+        val valueSp = if (landscape) 40.sp else 52.sp
 
         Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    ui.status, fontSize = 14.sp, color = Color.Gray,
+                    ui.status, fontSize = 14.sp, color = Color.Gray, maxLines = 1,
                     modifier = Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onDebug),
                 )
-                TextButton(onClick = onDiagnosis) { Text("Diagnosi") }
+                TextButton(onClick = onConsumi) { Text("Consumi") }
+                TextButton(onClick = onDiagnosis) { Text("Codici") }
                 TextButton(onClick = { ObdEngine.stop() }) { Text("Stop") }
             }
             alerts.forEach {
@@ -220,25 +259,25 @@ class MainActivity : ComponentActivity() {
                         .padding(8.dp),
                 )
             }
-            // 4 colonne in orizzontale, 2 in verticale
-            tiles.chunked(if (landscape) 4 else 2).forEach { row ->
+            // 5 colonne in orizzontale, 2 in verticale
+            tiles.chunked(if (landscape) 5 else 2).forEach { row ->
                 Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.forEach { TileView(it, Modifier.weight(1f).fillMaxHeight()) }
+                    row.forEach { TileView(it, valueSp, Modifier.weight(1f).fillMaxHeight()) }
                 }
             }
         }
     }
 
     @Composable
-    private fun TileView(t: Tile, modifier: Modifier) {
+    private fun TileView(t: Tile, valueSp: androidx.compose.ui.unit.TextUnit, modifier: Modifier) {
         Column(
-            modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(12.dp)).padding(8.dp),
+            modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(12.dp)).padding(6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
             Text(t.label, fontSize = 12.sp, color = Color.Gray)
-            Text(t.value, fontSize = if (t.big) 56.sp else 40.sp, color = t.color, fontFamily = FontFamily.Monospace, maxLines = 1)
-            Text(t.unit, fontSize = 14.sp, color = Color.Gray)
+            Text(t.value, fontSize = valueSp, color = t.color, fontFamily = FontFamily.Monospace, maxLines = 1)
+            Text(t.unit, fontSize = 13.sp, color = Color.Gray, maxLines = 1)
         }
     }
 
@@ -247,6 +286,11 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun DiagnosisPage(ui: UiState, onBack: () -> Unit) {
         val d = ui.diagnosis
+        val history by remember { ObdEngine.db.dao().dtcFlow() }.collectAsState(emptyList())
+        var confirmClear by remember { mutableStateOf(false) }
+        val clearBlock = ClearGuard.check(ui.values)
+        val hasCodes = d != null && (d.milOn == true || !d.stored.isNullOrEmpty() || !d.pending.isNullOrEmpty())
+
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -257,6 +301,10 @@ class MainActivity : ComponentActivity() {
                     Text(if (ui.diagnosing) "Lettura…" else "Leggi codici")
                 }
                 OutlinedButton(onClick = onBack) { Text("Indietro") }
+            }
+            ui.notice?.let {
+                Text(it, color = Yellow, modifier = Modifier.fillMaxWidth().background(Color(0xFF2A2A2A), RoundedCornerShape(8.dp)).padding(8.dp))
+                TextButton(onClick = { ObdEngine.dismissNotice() }) { Text("OK") }
             }
             if (!ui.running) Text("Connettiti all'auto per leggere i codici.", color = Color.Gray)
             if (d == null) {
@@ -275,12 +323,79 @@ class MainActivity : ComponentActivity() {
                 d.reportedCount?.let { Text("Codici dichiarati dalla centralina: $it") }
                 CodeList("Codici memorizzati (modo 03)", d.stored)
                 CodeList("Codici pendenti (modo 07)", d.pending)
+
+                d.freezeFrame?.let { ff ->
+                    HorizontalDivider()
+                    Text("Freeze frame — condizioni quando è scattato ${ff.code}", fontSize = 16.sp)
+                    FreezeValues(ff)
+                }
+
+                if (hasCodes) {
+                    HorizontalDivider()
+                    Text(
+                        "Prima di cancellare: codici e freeze frame vengono salvati nello storico qui sotto. " +
+                            "La cancellazione azzera anche i monitor di prontezza (serve una guida per ricompletarli).",
+                        fontSize = 12.sp, color = Color.Gray,
+                    )
+                    Button(
+                        onClick = { confirmClear = true },
+                        enabled = ui.running && !ui.diagnosing && clearBlock == null,
+                        colors = ButtonDefaults.buttonColors(containerColor = Red),
+                    ) { Text("Cancella codici…") }
+                    if (clearBlock != null && ui.running) Text(clearBlock, fontSize = 13.sp, color = Yellow)
+                }
                 Text(
-                    "Solo lettura: l'app non cancella nessun codice. Il prefisso indica la zona: " +
-                        "P = motore/cambio, C = telaio, B = carrozzeria, U = rete di comunicazione.",
+                    "Il prefisso indica la zona: P = motore/cambio, C = telaio, B = carrozzeria, U = rete di comunicazione.",
                     fontSize = 12.sp, color = Color.Gray,
                 )
             }
+
+            HorizontalDivider()
+            Text("Storico codici", fontSize = 18.sp)
+            if (history.isEmpty()) Text("nessun codice registrato finora", color = Color.Gray)
+            history.forEach { h ->
+                val fmt = SimpleDateFormat("dd/MM/yy HH:mm", Locale.ITALY)
+                Column(Modifier.fillMaxWidth().background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)).padding(8.dp)) {
+                    Text(h.code, fontSize = 20.sp, fontFamily = FontFamily.Monospace, color = if (h.clearedMs == null) Red else Color.Gray)
+                    Text(
+                        "${h.kind} · visto la prima volta ${fmt.format(Date(h.firstSeenMs))}, ultima ${fmt.format(Date(h.lastSeenMs))}" +
+                            (h.clearedMs?.let { " · cancellato ${fmt.format(Date(it))}" } ?: ""),
+                        fontSize = 12.sp, color = Color.Gray,
+                    )
+                    h.freeze?.let { text -> FreezeFrame.fromText(text)?.let { FreezeValues(it) } }
+                }
+            }
+        }
+
+        if (confirmClear) {
+            AlertDialog(
+                onDismissRequest = { confirmClear = false },
+                title = { Text("Cancellare i codici errore?") },
+                text = {
+                    Text(
+                        "Verranno cancellati i codici e il freeze frame dalla centralina (copia salvata nello storico) " +
+                            "e si azzerano i monitor di prontezza. Se il guasto c'è ancora, i codici torneranno. " +
+                            "Auto ferma, motore spento, quadro acceso.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { confirmClear = false; ObdEngine.requestClearCodes() }) {
+                        Text("Cancella", color = Red)
+                    }
+                },
+                dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Annulla") } },
+            )
+        }
+    }
+
+    @Composable
+    private fun FreezeValues(ff: FreezeFrame) {
+        ff.values.forEach { (id, value) ->
+            val pid = Pids.get(id)
+            Text(
+                "${pid?.name ?: "PID %02X".format(id)}: %.1f %s".format(value, pid?.unit ?: ""),
+                fontFamily = FontFamily.Monospace, fontSize = 13.sp,
+            )
         }
     }
 
@@ -291,6 +406,75 @@ class MainActivity : ComponentActivity() {
             codes == null -> Text("non letti (nessuna risposta valida)", color = Yellow)
             codes.isEmpty() -> Text("nessuno", color = Green)
             else -> codes.forEach { Text(it, fontSize = 22.sp, fontFamily = FontFamily.Monospace, color = Red) }
+        }
+    }
+
+    // ---- consumi, viaggi, rifornimenti
+
+    @Composable
+    private fun ConsumiPage(ui: UiState, onBack: () -> Unit) {
+        val trips by remember { ObdEngine.db.dao().tripsFlow() }.collectAsState(emptyList())
+        val refuels by remember { ObdEngine.db.dao().refuelsFlow() }.collectAsState(emptyList())
+        var liters by rememberSaveable { mutableStateOf("") }
+        var km by rememberSaveable { mutableStateOf("") }
+        val fmt = SimpleDateFormat("dd/MM/yy HH:mm", Locale.ITALY)
+
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Consumi e viaggi", fontSize = 24.sp, modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = onBack) { Text("Indietro") }
+            }
+
+            Text("Rifornimento", fontSize = 18.sp)
+            Text(
+                "Inserisci i litri messi al pieno e i km fatti dal pieno precedente. " +
+                    "L'app confronta con la sua stima e corregge i consumi.",
+                fontSize = 12.sp, color = Color.Gray,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = liters, onValueChange = { liters = it }, label = { Text("Litri") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f),
+                )
+                OutlinedTextField(
+                    value = km, onValueChange = { km = it }, label = { Text("Km dal pieno prec.") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f),
+                )
+            }
+            val l = liters.replace(',', '.').toDoubleOrNull()
+            val k = km.replace(',', '.').toDoubleOrNull()
+            Button(
+                onClick = { ObdEngine.addRefuel(l!!, k!!); liters = ""; km = "" },
+                enabled = l != null && k != null && l > 0 && k > 0,
+            ) { Text("Aggiungi rifornimento") }
+            Text("Fattore di taratura: %.2f (1.00 = stima non corretta)".format(ui.calibration), fontSize = 13.sp)
+            refuels.forEach { r ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${fmt.format(Date(r.dateMs))} · %.1f L · %.0f km · %.1f L/100km".format(r.liters, r.km, r.liters / r.km * 100),
+                        fontSize = 13.sp, modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { ObdEngine.deleteRefuel(r.id) }) { Text("Elimina") }
+                }
+            }
+
+            HorizontalDivider()
+            Text("Viaggi", fontSize = 18.sp)
+            if (trips.isEmpty()) Text("nessun viaggio registrato", color = Color.Gray)
+            trips.forEach { t ->
+                val minutes = (t.endMs - t.startMs) / 60_000
+                val avg = if (t.km >= 0.3) "%.1f L/100km".format(t.fuelL * ui.calibration / t.km * 100) else "—"
+                Column(Modifier.fillMaxWidth().background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)).padding(8.dp)) {
+                    Text(fmt.format(Date(t.startMs)), fontSize = 14.sp)
+                    Text(
+                        "%.1f km · %d min · %s · max %.0f km/h".format(t.km, minutes, avg, t.maxSpeed),
+                        fontFamily = FontFamily.Monospace, fontSize = 13.sp,
+                    )
+                }
+            }
         }
     }
 

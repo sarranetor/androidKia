@@ -139,15 +139,68 @@ class Elm327(
         return useResponseCount
     }
 
-    /** Diagnosi in sola lettura: stato spia (0101), codici memorizzati (03) e pendenti (07). */
+    /** Richiesta modo 02 (freeze frame), frame 0. Ritorna i byte di dati o null. */
+    suspend fun queryFreeze(pid: Int): IntArray? {
+        val lines = try {
+            send("02%02X00".format(pid), diagTimeoutMs)
+        } catch (e: ObdTimeout) {
+            return null
+        }
+        return parseResponse(lines, 0x42, pid, 0)
+    }
+
+    /** Freeze frame del primo guasto, oppure null se la centralina non ne ha. */
+    suspend fun readFreezeFrame(): FreezeFrame? {
+        val dtc = queryFreeze(0x02) ?: return null
+        if (dtc.size < 2 || (dtc[0] == 0 && dtc[1] == 0)) return null
+        val code = Dtc.decode(dtc[0], dtc[1])
+        // quali PID sono salvati nel freeze frame (stessa logica delle maschere del modo 01)
+        val pids = mutableListOf<Int>()
+        var base = 0x00
+        while (base <= 0x60) {
+            val mask = queryFreeze(base) ?: break
+            if (mask.size < 4) break
+            val found = Pids.supportedFromMask(base, mask)
+            pids += found
+            if ((base + 0x20) !in found) break
+            base += 0x20
+        }
+        val values = LinkedHashMap<Int, Double>()
+        for (id in pids) {
+            if (id % 0x20 == 0 || id == 0x02) continue
+            val pid = Pids.get(id) ?: continue
+            val data = queryFreeze(id) ?: continue
+            if (data.size >= pid.bytes) values[id] = pid.decode(data)
+        }
+        return FreezeFrame(code, values)
+    }
+
+    /**
+     * CANCELLA i codici errore (modo 04) e azzera i monitor di prontezza.
+     * Va chiamata SOLO da [ObdEngine] dopo conferma utente e [ClearGuard]. Ritorna true se la centralina conferma (44).
+     */
+    suspend fun clearCodes(): Boolean =
+        try {
+            send("04", diagTimeoutMs).any { it.replace(" ", "").startsWith("44") }
+        } catch (e: ObdTimeout) {
+            false
+        }
+
+    /** Diagnosi in sola lettura: stato spia (0101), codici memorizzati (03) e pendenti (07), freeze frame (02). */
     suspend fun readDiagnosis(): Diagnosis {
         val status = query(0x01, diagTimeoutMs)
+        val milOn = status?.let { it[0] and 0x80 != 0 }
+        val stored = readDtcs("03", 0x43)
+        val pending = readDtcs("07", 0x47)
+        // il freeze frame ha senso solo se c'è almeno un codice
+        val hasCodes = milOn == true || !stored.isNullOrEmpty() || !pending.isNullOrEmpty()
         return Diagnosis(
-            milOn = status?.let { it[0] and 0x80 != 0 },
+            milOn = milOn,
             reportedCount = status?.let { it[0] and 0x7F },
-            stored = readDtcs("03", 0x43),
-            pending = readDtcs("07", 0x47),
+            stored = stored,
+            pending = pending,
             atMillis = System.currentTimeMillis(),
+            freezeFrame = if (hasCodes) readFreezeFrame() else null,
         )
     }
 
@@ -164,14 +217,20 @@ class Elm327(
          * Gestisce righe con o senza spazi ("410C1AF8") e risposte di più centraline
          * (prende la prima valida).
          */
-        fun parseMode01(lines: List<String>, pid: Int): IntArray? {
-            val prefix = "41%02X".format(pid)
+        fun parseMode01(lines: List<String>, pid: Int): IntArray? = parseResponse(lines, 0x41, pid, null)
+
+        /**
+         * Come [parseMode01] ma per qualunque modo: [responseByte] 0x41 (modo 01) o 0x42 (modo 02,
+         * dove dopo il PID c'è il numero del frame, [frame]).
+         */
+        fun parseResponse(lines: List<String>, responseByte: Int, pid: Int, frame: Int?): IntArray? {
+            val prefix = "%02X%02X".format(responseByte, pid) + (frame?.let { "%02X".format(it) } ?: "")
             for (line in lines) {
                 val hex = line.replace(" ", "").uppercase()
-                if (hex.startsWith(prefix) && (hex.length - 4) % 2 == 0 &&
+                if (hex.startsWith(prefix) && (hex.length - prefix.length) % 2 == 0 &&
                     hex.all { it in "0123456789ABCDEF" }
                 ) {
-                    val body = hex.substring(4)
+                    val body = hex.substring(prefix.length)
                     return IntArray(body.length / 2) { body.substring(it * 2, it * 2 + 2).toInt(16) }
                 }
             }

@@ -11,7 +11,29 @@ data class Diagnosis(
     /** Codici pendenti (modo 07) */
     val pending: List<String>?,
     val atMillis: Long,
+    /** Fotografia dei valori nel momento del guasto (modo 02), se la centralina la fornisce */
+    val freezeFrame: FreezeFrame? = null,
 )
+
+/** Freeze frame: il codice che l'ha causato e i valori (chiave = PID) letti in quel momento. */
+data class FreezeFrame(val code: String, val values: Map<Int, Double>) {
+    /** Testo per il database: "P0172;05=88.0;0C=2100.0" */
+    fun toText(): String = (listOf(code) + values.map { (k, v) -> "%02X=%s".format(k, v) }).joinToString(";")
+
+    companion object {
+        fun fromText(text: String): FreezeFrame? {
+            val parts = text.split(';')
+            val code = parts.firstOrNull()?.takeIf { it.isNotBlank() } ?: return null
+            val values = parts.drop(1).mapNotNull {
+                val kv = it.split('=')
+                val pid = kv.getOrNull(0)?.toIntOrNull(16)
+                val v = kv.getOrNull(1)?.toDoubleOrNull()
+                if (pid != null && v != null) pid to v else null
+            }.toMap()
+            return FreezeFrame(code, values)
+        }
+    }
+}
 
 object Dtc {
     /** Trasforma due byte nel codice, es. 0x01 0x33 → "P0133". */
