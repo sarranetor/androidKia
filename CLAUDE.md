@@ -20,12 +20,14 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - **Fase 1: fatta e provata in auto (log 2, fermo al minimo).** Foreground service + `ObdEngine` (singleton, sopravvive a rotazione/chiusura Activity), riconnessione automatica (2/5/10 s), polling a priorità (`Poller`: veloci ogni ciclo, 2 lenti a rotazione, `ATRV` ogni 5 s), cruscotto orizzontale+verticale con avvisi (`Alerts`), diagnosi codici in sola lettura (0101 + modi 03/07, `Dtc.kt`) con lettura automatica alla connessione e pagina "Diagnosi". Suffisso "risposte attese" (`010C1`) provato all'avvio e tenuto solo se l'adattatore lo gestisce (vedi nota nel log).
 - **Fase 2: codice fatto, test PC ok, da provare in auto.** Freeze frame (modo 02) letto con la diagnosi, cancellazione codici (modo 04) con doppio controllo (`ClearGuard` + dialogo di conferma; salva prima codici e freeze frame nello storico), Room (`Db.kt`: viaggi, campioni ogni 2 s, storico codici, rifornimenti), consumi speed-density (`Consumption.kt`, VE 0.85, fattore di taratura da rifornimenti = litri + km dal pieno precedente, `Calibration`), `TripTracker` (viaggio = giri>400, fine dopo 2 min a motore spento), pagine Consumi e Codici/storico, cruscotto a 10 riquadri (+consumo istantaneo e media viaggio).
 - **Fase 2b: codice fatto, test PC ok, da provare in auto.** "Test di guida diagnostico": `DriveTest.kt` (`DriveTestAnalyzer`: checklist condizioni + rapporto con indizi OK/info/ATTENZIONE), `Readiness.kt` (monitor di prontezza da 0101, mostrati anche nella pagina Codici), poller dedicato (O2 monte/valle, giri, velocità, carico, MAP a ogni ciclo + 3 lenti a rotazione), confronto codici prima/dopo, rapporto salvato nel DB (`drive_reports`, migrazione Room 1→2) e condivisibile come testo.
-- Fasi 3–5: da fare.
+- **Fase 3: codice fatto e provato in locale (telefono → adb reverse → wrangler dev), PUBBLICAZIONE su Cloudflare ancora da fare** (serve account + `wrangler login`, vedi `server/README.md`). Server in `server/` (Worker TS + D1, `/api/ingest|ping|latest`, auth Bearer, 19 test + `scripts/smoke.ts`). App: coda in uscita Room (`outbox`, DB v3), `Events.kt`, `Sync.kt` (`SyncManager`: gruppi da 50, backoff 15 s→5 min, 401 ferma l'invio, 400/413/422 scarta il gruppo), pagina Server (URL, token, interruttore, prova, invia ora, invia storico), snapshot ogni 15 s in viaggio, viaggio a fine corsa, codici a ogni diagnosi, rapporti, stato.
+- Fasi 4–5: da fare (4 = strumenti MCP + OAuth + connettore claude.ai).
 
 ## Struttura (`app/src/main/java/it/ehimacchina/obd/`)
 - `Transport.kt` interfaccia canale; `BluetoothTransport` (SPP, fallback canale 1 per cloni), `SimulatedTransport`, `ReplayTransport`, `LoggingTransport` (in `SessionLog.kt`).
 - `Elm327.kt` protocollo (senza dipendenze Android → testabile). `Pid.kt` tabella PID e decodifica.
-- `DriveTest.kt`, `Readiness.kt`.
+- `DriveTest.kt`, `Readiness.kt`, `Events.kt` (JSON verso il server), `Sync.kt` (impostazioni, rete, coda, `SyncManager`).
+- `server/`: `src/index.ts` (router), `ingest.ts` (validazione e SQL, funzioni pure), `auth.ts`; `migrations/0001_init.sql`; `test/`; `scripts/smoke.ts`.
 - `Db.kt` (Room, versione 2), `Consumption.kt` (stima consumi, `Calibration`, `ClearGuard`), `TripTracker.kt`.
 - `ObdEngine.kt` (connessione, sessione, riconnessione, comandi in coda), `ObdService.kt` (notifica/foreground), `Poller.kt`, `Alerts.kt` (soglie: liquido 98/105 °C, batteria 12.0/11.5 V solo a motore acceso, >15 V), `Dtc.kt` (decodifica codici, `Diagnosis`), `MainActivity.kt` (Compose: connessione, cruscotto, diagnosi, debug).
 - Formato log (TAB): `epochMs  comando  risposta('|' = a capo)  durataMs`; righe `#ERR`/`#NOTE` per errori/note. Stesso formato letto dalla riproduzione.
@@ -69,3 +71,10 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - Se la sonda a valle (PID 15) resta ferma a ~0.45 V come nel log 2, il rapporto lo segnala come non valutabile (non conclude su P0420).
 - I monitor di prontezza dovrebbero passare da "Catalizzatore incompleto" a completo dopo una guida a caldo.
 - Il rapporto è testo piano: sarà letto anche dal futuro tool MCP `controllo_salute`.
+
+### Provare Fase 3 in locale con il telefono (debug)
+- Server: `cd server && wrangler d1 migrations apply ehi-macchina --local && npm run dev`; `adb reverse tcp:8787 tcp:8787`.
+- Configurazione app senza digitare: `adb shell "run-as it.ehimacchina.obd sh -c 'mkdir -p shared_prefs && cat > shared_prefs/sync.xml'"` con `<map><string name="url">http://localhost:8787</string><string name="token">dev-token-solo-locale</string><boolean name="enabled" value="true"/></map>` (funziona solo con l'APK debug).
+- Trovati e corretti con questa prova: codici/viaggi già presenti non partivano mai (ora ogni diagnosi rimette in coda i codici aperti + pulsante «Invia storico»); simulatore con virgola decimale (locale italiano) falsava ATRV.
+- Dopo che il server torna online, la coda riparte da sola entro il backoff (max 5 min) o subito con «Invia ora».
+- uiautomator dump + `adb shell input tap` funzionano per pilotare l'app da PC (le coordinate cambiano se compaiono righe di messaggio).

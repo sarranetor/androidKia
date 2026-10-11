@@ -50,4 +50,6 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
 
     testImplementation("junit:junit:4.13.2")
+    // nei test sul PC le classi org.json di Android sono vuote: serve l'implementazione vera
+    testImplementation("org.json:json:20240303")
 }

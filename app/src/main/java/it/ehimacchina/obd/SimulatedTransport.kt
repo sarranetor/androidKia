@@ -32,7 +32,7 @@ class SimulatedTransport(
         return when {
             c == "ATZ" -> "\r\rELM327 v1.5"
             c == "ATDP" -> "AUTO, ISO 15765-4 (CAN 11/500)"
-            c == "ATRV" -> "%.1fV".format(if (t < 8) 12.2 else 13.8 + 0.3 * sin(t / 7))
+            c == "ATRV" -> "%.1fV".format(java.util.Locale.US, if (t < 8) 12.2 else 13.8 + 0.3 * sin(t / 7))
             c.startsWith("AT") -> "OK"
             c == "03" -> if (cleared) "43 00" else "43 01 01 33"
             c == "07" -> "47 00"

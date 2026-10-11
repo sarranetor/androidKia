@@ -64,6 +64,14 @@ data class RefuelEntity(
     val km: Double,
 )
 
+/** Evento in attesa di essere inviato al server (JSON già pronto). */
+@Entity(tableName = "outbox")
+data class OutboxEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val createdMs: Long,
+    val json: String,
+)
+
 /** Rapporto di un test di guida diagnostico, già in testo (si condivide e si legge così). */
 @Entity(tableName = "drive_reports")
 data class DriveReportEntity(
@@ -75,6 +83,14 @@ data class DriveReportEntity(
 
 @Dao
 interface ObdDao {
+    @Insert suspend fun insertOutbox(e: OutboxEntity): Long
+    @Query("SELECT * FROM outbox ORDER BY id LIMIT :limit") suspend fun outboxBatch(limit: Int): List<OutboxEntity>
+    @Query("DELETE FROM outbox WHERE id IN (:ids)") suspend fun deleteOutbox(ids: List<Long>)
+    @Query("SELECT COUNT(*) FROM outbox") fun outboxCount(): Flow<Int>
+    /** Tiene solo gli ultimi [keep] eventi: se il server resta irraggiungibile a lungo la coda non cresce all'infinito */
+    @Query("DELETE FROM outbox WHERE id <= (SELECT id FROM outbox ORDER BY id DESC LIMIT 1 OFFSET :keep)")
+    suspend fun trimOutbox(keep: Int)
+
     @Insert suspend fun insertDriveReport(r: DriveReportEntity): Long
     @Query("SELECT * FROM drive_reports ORDER BY startMs DESC") fun driveReportsFlow(): Flow<List<DriveReportEntity>>
 
@@ -92,6 +108,8 @@ interface ObdDao {
     @Update suspend fun updateDtc(d: DtcEntity)
     @Query("SELECT * FROM dtc WHERE code = :code AND clearedMs IS NULL LIMIT 1") suspend fun openDtc(code: String): DtcEntity?
     @Query("SELECT * FROM dtc WHERE clearedMs IS NULL") suspend fun openDtcs(): List<DtcEntity>
+    @Query("SELECT * FROM dtc") suspend fun allDtcs(): List<DtcEntity>
+    @Query("SELECT * FROM drive_reports") suspend fun allDriveReports(): List<DriveReportEntity>
     @Query("SELECT * FROM dtc ORDER BY lastSeenMs DESC") fun dtcFlow(): Flow<List<DtcEntity>>
 
     @Insert suspend fun insertRefuel(r: RefuelEntity): Long
@@ -101,8 +119,8 @@ interface ObdDao {
 }
 
 @Database(
-    entities = [TripEntity::class, SampleEntity::class, DtcEntity::class, RefuelEntity::class, DriveReportEntity::class],
-    version = 2,
+    entities = [TripEntity::class, SampleEntity::class, DtcEntity::class, RefuelEntity::class, DriveReportEntity::class, OutboxEntity::class],
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -119,11 +137,21 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v3: coda di invio al server */
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `outbox` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`createdMs` INTEGER NOT NULL, `json` TEXT NOT NULL)",
+                )
+            }
+        }
+
         @Volatile private var instance: AppDatabase? = null
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "ehi-macchina.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build().also { instance = it }
         }
     }

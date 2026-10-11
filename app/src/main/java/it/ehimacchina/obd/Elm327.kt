@@ -120,8 +120,9 @@ class Elm327(
         } catch (e: ObdTimeout) {
             null
         } ?: return null
-        return Regex("""(\d+(\.\d+)?)\s*V""", RegexOption.IGNORE_CASE)
-            .find(line)?.groupValues?.get(1)?.toDoubleOrNull()
+        // un ELM vero risponde "12.6V"; si tollera anche la virgola decimale
+        return Regex("""(\d+(?:[.,]\d+)?)\s*V""", RegexOption.IGNORE_CASE)
+            .find(line)?.groupValues?.get(1)?.replace(',', '.')?.toDoubleOrNull()
     }
 
     /** Legge e decodifica un PID noto. */

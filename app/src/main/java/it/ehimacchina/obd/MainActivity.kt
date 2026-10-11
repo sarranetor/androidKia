@@ -26,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -43,7 +44,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private enum class Page { HOME, DIAGNOSIS, CONSUMI, DEBUG }
+private enum class Page { HOME, DIAGNOSIS, CONSUMI, SERVER, DEBUG }
 
 private val Red = Color(0xFFE53935)
 private val Yellow = Color(0xFFFFB300)
@@ -125,6 +126,7 @@ class MainActivity : ComponentActivity() {
         when {
             page == Page.DIAGNOSIS -> DiagnosisPage(ui) { page = Page.HOME }
             page == Page.CONSUMI -> ConsumiPage(ui) { page = Page.HOME }
+            page == Page.SERVER -> ServerPage { page = Page.HOME }
             page == Page.DEBUG -> DebugPage(ui) { page = Page.HOME }
             ui.running -> Dashboard(
                 ui,
@@ -136,6 +138,7 @@ class MainActivity : ComponentActivity() {
                 ui, devices,
                 onDiagnosis = { page = Page.DIAGNOSIS },
                 onConsumi = { page = Page.CONSUMI },
+                onServer = { page = Page.SERVER },
                 onDebug = { page = Page.DEBUG },
             )
         }
@@ -147,7 +150,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun ConnectPage(
         ui: UiState, devices: List<BluetoothDevice>,
-        onDiagnosis: () -> Unit, onConsumi: () -> Unit, onDebug: () -> Unit,
+        onDiagnosis: () -> Unit, onConsumi: () -> Unit, onServer: () -> Unit, onDebug: () -> Unit,
     ) {
         var mode by rememberSaveable { mutableStateOf(Mode.SIMULATOR) }
         var address by rememberSaveable { mutableStateOf<String?>(null) }
@@ -191,6 +194,7 @@ class MainActivity : ComponentActivity() {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onDiagnosis) { Text("Codici") }
                 OutlinedButton(onClick = onConsumi) { Text("Consumi") }
+                OutlinedButton(onClick = onServer) { Text("Server") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
@@ -509,6 +513,82 @@ class MainActivity : ComponentActivity() {
             codes == null -> Text("non letti (nessuna risposta valida)", color = Yellow)
             codes.isEmpty() -> Text("nessuno", color = Green)
             else -> codes.forEach { Text(it, fontSize = 22.sp, fontFamily = FontFamily.Monospace, color = Red) }
+        }
+    }
+
+    // ---- server
+
+    @Composable
+    private fun ServerPage(onBack: () -> Unit) {
+        val saved by ObdEngine.settings.config.collectAsState()
+        val sync by ObdEngine.sync.state.collectAsState()
+        val pending by remember { ObdEngine.db.dao().outboxCount() }.collectAsState(0)
+        var url by rememberSaveable { mutableStateOf(saved.url) }
+        var token by rememberSaveable { mutableStateOf(saved.token) }
+        var enabled by rememberSaveable { mutableStateOf(saved.enabled) }
+        var message by remember { mutableStateOf<String?>(null) }
+        val scope = rememberCoroutineScope()
+        val fmt = SimpleDateFormat("dd/MM/yy HH:mm:ss", Locale.ITALY)
+        val draft = SyncConfig(url, token, enabled)
+
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Server", fontSize = 24.sp, modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = onBack) { Text("Indietro") }
+            }
+            Text(
+                "I dati dell'auto (valori ogni 15 s mentre guidi, viaggi, codici errore, rapporti) vengono inviati al tuo server " +
+                    "Cloudflare, da cui Claude potrà leggerli. Se manca internet restano in coda e partono dopo.",
+                fontSize = 13.sp, color = Color.Gray,
+            )
+            OutlinedTextField(
+                value = url, onValueChange = { url = it }, label = { Text("Indirizzo (https://…workers.dev)") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            )
+            OutlinedTextField(
+                value = token, onValueChange = { token = it }, label = { Text("Token segreto") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = enabled, onCheckedChange = { enabled = it })
+                Text("  Invio attivo")
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    ObdEngine.settings.save(draft)
+                    ObdEngine.sync.kick()
+                    message = "Salvato"
+                }) { Text("Salva") }
+                OutlinedButton(onClick = {
+                    message = "Prova in corso…"
+                    scope.launch { message = ObdEngine.sync.ping(draft) }
+                }) { Text("Invia prova") }
+            }
+            message?.let { Text(it, color = Yellow) }
+
+            HorizontalDivider()
+            Text("Stato invio", fontSize = 18.sp)
+            Text("Eventi in coda: $pending")
+            Text("Ultimo invio riuscito: " + (sync.lastOkMs?.let { fmt.format(Date(it)) } ?: "mai"))
+            sync.lastError?.let { Text("Ultimo errore: $it", color = Red) }
+            if (sync.authRejected) Text("Il token è stato rifiutato: correggilo e premi Salva.", color = Red)
+            if (!saved.ready) Text("Invio non attivo: inserisci indirizzo e token, attiva l'interruttore e premi Salva.", color = Color.Gray, fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { ObdEngine.sync.kick() }, enabled = saved.ready && pending > 0) { Text("Invia ora") }
+                OutlinedButton(
+                    onClick = { scope.launch { message = "Storico messo in coda: ${ObdEngine.queueHistory()} eventi" } },
+                    enabled = saved.ready,
+                ) { Text("Invia storico") }
+            }
+            Text(
+                "«Invia storico» manda al server viaggi, codici e rapporti già presenti nell'app (utile al primo collegamento; si può ripetere senza creare doppioni).",
+                fontSize = 12.sp, color = Color.Gray,
+            )
         }
     }
 

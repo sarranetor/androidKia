@@ -68,6 +68,12 @@ class Elm327Test {
         assertEquals(12.6, elm.batteryVoltage()!!, 0.001)
     }
 
+    @Test fun batteryVoltageToleratesCommaAndSpaces() = runBlocking {
+        assertEquals(13.8, Elm327(ScriptTransport(mapOf("ATRV" to "13,8V"))).batteryVoltage()!!, 0.001)
+        assertEquals(12.0, Elm327(ScriptTransport(mapOf("ATRV" to "12.0 V"))).batteryVoltage()!!, 0.001)
+        assertNull(Elm327(ScriptTransport(mapOf("ATRV" to "?"))).batteryVoltage())
+    }
+
     @Test fun readOnlyGuard() {
         assertTrue(Elm327.isReadOnlyCommand("010C"))
         assertTrue(Elm327.isReadOnlyCommand("03"))

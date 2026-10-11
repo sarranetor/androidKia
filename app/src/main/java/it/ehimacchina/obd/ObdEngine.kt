@@ -115,10 +115,32 @@ object ObdEngine {
 
     /** Va chiamato prima di ogni altro uso (Activity e Service); sicuro chiamarlo più volte. */
     fun attach(context: Context) {
-        if (!::app.isInitialized) app = context.applicationContext as Application
+        if (::app.isInitialized) return
+        app = context.applicationContext as Application
+        settings = SyncSettings(app)
+        sync = SyncManager(RoomOutbox(db.dao()), UrlConnectionPoster(), { settings.config.value })
+        sync.start(scope)
+    }
+
+    lateinit var settings: SyncSettings
+        private set
+    lateinit var sync: SyncManager
+        private set
+
+    /** Mette un evento in coda per il server (solo se l'invio è configurato e attivo). */
+    private suspend fun enqueue(json: String) {
+        if (!settings.config.value.ready) return
+        val dao = db.dao()
+        dao.insertOutbox(OutboxEntity(createdMs = System.currentTimeMillis(), json = json))
+        dao.trimOutbox(MAX_OUTBOX)
+        sync.kick()
     }
 
     /** Attese fra un tentativo di riconnessione e il successivo (l'ultima si ripete) */
+    private const val MAX_OUTBOX = 5000
+    private const val SNAPSHOT_EVERY_MS = 15_000L
+    private var lastSnapshotSentMs = 0L
+
     private val retryDelaysSec = listOf(2L, 5L, 10L)
 
     fun logFiles(): List<File> =
@@ -213,6 +235,20 @@ object ObdEngine {
     }
 
     fun dismissDriveReport() = _state.update { it.copy(driveReport = null) }
+
+    /** Mette in coda tutto lo storico già presente nell'app (viaggi, codici, rapporti), per il primo collegamento al server. */
+    suspend fun queueHistory(): Int {
+        if (!settings.config.value.ready) return 0
+        val dao = db.dao()
+        var n = 0
+        refreshCalibration()
+        dao.allTrips().filter { it.km >= 0.1 }.forEach {
+            enqueue(Events.trip(it.startMs, it.endMs, it.km, it.fuelL * calibration, it.maxSpeed)); n++
+        }
+        dao.allDtcs().forEach { enqueue(Events.dtc(it)); n++ }
+        dao.allDriveReports().forEach { enqueue(Events.driveReport(it.startMs, it.endMs, it.text)); n++ }
+        return n
+    }
 
     fun dismissNotice() = _state.update { it.copy(notice = null) }
 
@@ -369,6 +405,7 @@ object ObdEngine {
         val now = System.currentTimeMillis()
         val report = d.report(now, driveStartDiag, endDiag)
         db.dao().insertDriveReport(DriveReportEntity(startMs = report.startMs, endMs = report.endMs, text = report.text))
+        enqueue(Events.driveReport(report.startMs, report.endMs, report.text))
         _state.update { it.copy(drive = null, driveReport = report.text, diagnosis = endDiag ?: it.diagnosis) }
     }
 
@@ -384,7 +421,11 @@ object ObdEngine {
         val ok = elm.clearCodes()
         val dao = db.dao()
         val now = System.currentTimeMillis()
-        if (ok) dao.openDtcs().forEach { dao.updateDtc(it.copy(clearedMs = now)) }
+        if (ok) dao.openDtcs().forEach {
+            val cleared = it.copy(clearedMs = now)
+            dao.updateDtc(cleared)
+            enqueue(Events.dtc(cleared))
+        }
         val after = elm.readDiagnosis()
         _state.update {
             it.copy(
@@ -395,7 +436,7 @@ object ObdEngine {
         }
     }
 
-    /** Salva nello storico i codici visti (con freeze frame, se c'è e non era già salvato). */
+    /** Salva nello storico i codici visti (con freeze frame, se c'è e non era già salvato) e avvisa il server. */
     private suspend fun recordDiagnosis(d: Diagnosis) {
         val dao = db.dao()
         val freeze = d.freezeFrame?.toText()
@@ -411,9 +452,15 @@ object ObdEngine {
         }
         // codici aperti che la centralina non riporta più: spariti da soli (o cancellati altrove)
         if (d.stored != null && d.pending != null) {
-            dao.openDtcs().filter { o -> all.none { it.first == o.code } }
-                .forEach { dao.updateDtc(it.copy(clearedMs = d.atMillis)) }
+            dao.openDtcs().filter { o -> all.none { it.first == o.code } }.forEach {
+                dao.updateDtc(it.copy(clearedMs = d.atMillis))
+            }
         }
+        // al server tutti i codici ancora aperti (poche righe; l'invio è idempotente, quindi anche i codici
+        // già presenti prima di attivare l'invio arrivano), più quelli appena cancellati
+        dao.allDtcs().filter { it.clearedMs == null || it.clearedMs == d.atMillis }.forEach { enqueue(Events.dtc(it)) }
+        val s = _state.value
+        enqueue(Events.status(d.atMillis, s.info, s.supported, calibration, d))
     }
 
     /** Aggiorna viaggio e consumi dopo ogni ciclo di lettura; salva su database. */
@@ -423,7 +470,7 @@ object ObdEngine {
         when (val ev = tracker.tick(now, v)) {
             is TripTracker.Event.Started -> {
                 tripId = db.dao().insertTrip(TripEntity(startMs = ev.startMs, endMs = now, km = 0.0, fuelL = 0.0, maxSpeed = 0.0))
-                lastSampleMs = now; lastTripSaveMs = now
+                lastSampleMs = now; lastTripSaveMs = now; lastSnapshotSentMs = 0
             }
             is TripTracker.Event.Ended -> endTrip(ev)
             null -> {}
@@ -447,6 +494,10 @@ object ObdEngine {
                     ),
                 )
             }
+            if (now - lastSnapshotSentMs >= SNAPSHOT_EVERY_MS) {
+                lastSnapshotSentMs = now
+                enqueue(Events.snapshot(now, v, _state.value.battery, lph, tracker.km))
+            }
             if (now - lastTripSaveMs >= 30_000) {
                 lastTripSaveMs = now
                 saveTrip(id, now, tracker.maxSpeed)
@@ -469,6 +520,7 @@ object ObdEngine {
         if (sm.worthSaving) {
             dao.updateTrip(TripEntity(id, sm.startMs, sm.endMs, sm.km, sm.fuelL, sm.maxSpeed))
             refreshCalibration()
+            enqueue(Events.trip(sm.startMs, sm.endMs, sm.km, sm.fuelL * calibration, sm.maxSpeed))
         } else {
             dao.deleteSamples(id)
             dao.deleteTrip(id)
