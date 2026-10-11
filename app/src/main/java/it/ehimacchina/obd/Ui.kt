@@ -24,6 +24,9 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,51 +46,84 @@ import androidx.compose.ui.unit.sp
 // Palette scura da cruscotto: sfondo quasi nero, superfici leggermente più chiare,
 // un solo colore d'accento (ciano) e tre colori di stato usati ovunque nello stesso modo.
 
+/** Colori dell'app per un tema (scuro o chiaro). */
+data class AppColors(
+    val background: Color, val surface: Color, val surfaceHigh: Color, val outline: Color,
+    val text: Color, val muted: Color, val accent: Color, val onAccent: Color, val accentContainer: Color,
+    val ok: Color, val warn: Color, val crit: Color, val dark: Boolean,
+)
+
+/** Tema scuro: sfondo quasi nero, accento ciano (predefinito, adatto di notte in auto). */
+val DarkColors = AppColors(
+    background = Color(0xFF0B0E13), surface = Color(0xFF141922), surfaceHigh = Color(0xFF1C2330), outline = Color(0xFF2A3242),
+    text = Color(0xFFE8ECF2), muted = Color(0xFF8B95A7), accent = Color(0xFF4CC9F0), onAccent = Color(0xFF00222E),
+    accentContainer = Color(0xFF0F3A4A), ok = Color(0xFF34D399), warn = Color(0xFFFBBF24), crit = Color(0xFFF87171), dark = true,
+)
+
+/** Tema chiaro: sfondo grigio chiarissimo, colori più scuri e saturi per restare leggibili al sole. */
+val LightColors = AppColors(
+    background = Color(0xFFF3F5F8), surface = Color(0xFFFFFFFF), surfaceHigh = Color(0xFFEAEEF3), outline = Color(0xFFD3DAE3),
+    text = Color(0xFF12161C), muted = Color(0xFF5B6577), accent = Color(0xFF0A7FAE), onAccent = Color(0xFFFFFFFF),
+    accentContainer = Color(0xFFD6F0FA), ok = Color(0xFF15803D), warn = Color(0xFFB45309), crit = Color(0xFFDC2626), dark = false,
+)
+
+val LocalAppColors = staticCompositionLocalOf { DarkColors }
+
+/**
+ * Accesso ai colori del tema corrente (scuro o chiaro), usato in tutta l'interfaccia.
+ * Stessa palette dappertutto: un accento e tre colori di stato (ok, attenzione, critico).
+ */
 object Palette {
-    val Background = Color(0xFF0B0E13)
-    val Surface = Color(0xFF141922)
-    val SurfaceHigh = Color(0xFF1C2330)
-    val Outline = Color(0xFF2A3242)
-    val Text = Color(0xFFE8ECF2)
-    val Muted = Color(0xFF8B95A7)
-    val Accent = Color(0xFF4CC9F0)
-    val OnAccent = Color(0xFF00222E)
-    val Ok = Color(0xFF34D399)
-    val Warn = Color(0xFFFBBF24)
-    val Crit = Color(0xFFF87171)
+    val Background: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.background
+    val Surface: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.surface
+    val SurfaceHigh: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.surfaceHigh
+    val Outline: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.outline
+    val Text: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.text
+    val Muted: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.muted
+    val Accent: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.accent
+    val OnAccent: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.onAccent
+    val Ok: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.ok
+    val Warn: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.warn
+    val Crit: Color @Composable @ReadOnlyComposable get() = LocalAppColors.current.crit
 }
 
 /** Colore per un livello di avviso (null = normale). */
+@Composable
 fun levelColor(l: Level?, normal: Color = Palette.Text) = when (l) {
     Level.CRIT -> Palette.Crit
     Level.WARN -> Palette.Warn
     null -> normal
 }
 
-private val colors = darkColorScheme(
-    primary = Palette.Accent,
-    onPrimary = Palette.OnAccent,
-    primaryContainer = Color(0xFF0F3A4A),
-    onPrimaryContainer = Palette.Accent,
-    secondary = Palette.Accent,
-    secondaryContainer = Palette.SurfaceHigh,
-    onSecondaryContainer = Palette.Text,
-    background = Palette.Background,
-    onBackground = Palette.Text,
-    surface = Palette.Surface,
-    onSurface = Palette.Text,
-    surfaceVariant = Palette.SurfaceHigh,
-    onSurfaceVariant = Palette.Muted,
-    surfaceContainer = Palette.Surface,
-    surfaceContainerHigh = Palette.SurfaceHigh,
-    surfaceContainerHighest = Palette.SurfaceHigh,
-    outline = Palette.Outline,
-    outlineVariant = Palette.Outline,
-    error = Palette.Crit,
+private fun schemeFor(c: AppColors) = (if (c.dark) darkColorScheme() else lightColorScheme()).copy(
+    primary = c.accent,
+    onPrimary = c.onAccent,
+    primaryContainer = c.accentContainer,
+    onPrimaryContainer = c.accent,
+    secondary = c.accent,
+    secondaryContainer = c.surfaceHigh,
+    onSecondaryContainer = c.text,
+    background = c.background,
+    onBackground = c.text,
+    surface = c.surface,
+    onSurface = c.text,
+    surfaceVariant = c.surfaceHigh,
+    onSurfaceVariant = c.muted,
+    surfaceContainer = c.surface,
+    surfaceContainerHigh = c.surfaceHigh,
+    surfaceContainerHighest = c.surfaceHigh,
+    outline = c.outline,
+    outlineVariant = c.outline,
+    error = c.crit,
 )
 
 @Composable
-fun EhiTheme(content: @Composable () -> Unit) = MaterialTheme(colorScheme = colors, content = content)
+fun EhiTheme(light: Boolean = false, content: @Composable () -> Unit) {
+    val c = if (light) LightColors else DarkColors
+    CompositionLocalProvider(LocalAppColors provides c) {
+        MaterialTheme(colorScheme = schemeFor(c), content = content)
+    }
+}
 
 /** Numeri grandi con cifre a larghezza fissa: non "ballano" quando cambiano. */
 val Numbers = TextStyle(fontFeatureSettings = "tnum", fontWeight = FontWeight.SemiBold)
@@ -352,11 +388,12 @@ fun NavTile(label: String, icon: ImageVector, onClick: () -> Unit, modifier: Mod
  */
 @Composable
 fun Sparkline(values: List<Double?>, min: Double, max: Double, reference: Double?, color: Color, modifier: Modifier = Modifier) {
+    val refColor = Palette.Muted.copy(alpha = 0.6f) // letto qui: dentro il Canvas non si può leggere il tema
     Canvas(modifier.fillMaxWidth().height(90.dp).clip(RoundedCornerShape(12.dp)).background(Palette.SurfaceHigh)) {
         fun y(v: Double) = size.height * (1 - ((v - min) / (max - min)).coerceIn(0.0, 1.0)).toFloat()
         if (reference != null) {
             drawLine(
-                Palette.Muted.copy(alpha = 0.6f), Offset(0f, y(reference)), Offset(size.width, y(reference)),
+                refColor, Offset(0f, y(reference)), Offset(size.width, y(reference)),
                 strokeWidth = 2f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f)),
             )
         }

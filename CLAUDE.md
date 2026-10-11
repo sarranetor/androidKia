@@ -27,7 +27,7 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 ## Struttura (`app/src/main/java/it/ehimacchina/obd/`)
 - `Transport.kt` interfaccia canale; `BluetoothTransport` (SPP, fallback canale 1 per cloni), `SimulatedTransport`, `ReplayTransport`, `LoggingTransport` (in `SessionLog.kt`).
 - `Elm327.kt` protocollo (senza dipendenze Android → testabile). `Pid.kt` tabella PID e decodifica.
-- `Ui.kt`: tema (palette scura `Palette`, accento ciano, stati Ok/Warn/Crit) e componenti condivisi (`PageScaffold`, `SectionCard`, `MetricTile`, `Banner`, `CheckRow`, `ChoiceCard`, `NavTile`, `CodeBadge`…). Icona app adattiva `ic_launcher_foreground` (contagiri) e `ic_stat_gauge` per la notifica. Edge-to-edge con `safeDrawingPadding()` (targetSdk 35).
+- `Ui.kt`: tema scuro (predefinito) o chiaro, scelto con l'interruttore nella home e salvato in preferenze `ui`/`light` (`AppColors` Dark/Light + `LocalAppColors`; `Palette.X` sono getter @Composable, quindi usabili solo in composizione: nei `Canvas` leggere il colore prima). Palette ( accento ciano, stati Ok/Warn/Crit) e componenti condivisi (`PageScaffold`, `SectionCard`, `MetricTile`, `Banner`, `CheckRow`, `ChoiceCard`, `NavTile`, `CodeBadge`…). Icona app adattiva `ic_launcher_foreground` (contagiri) e `ic_stat_gauge` per la notifica. Edge-to-edge con `safeDrawingPadding()` (targetSdk 35).
 - `DriveTest.kt`, `Readiness.kt`, `Events.kt` (JSON verso il server), `Sync.kt` (impostazioni, rete, coda, `SyncManager`).
 - `server/`: `src/index.ts` (router), `ingest.ts` (validazione e SQL, funzioni pure), `auth.ts`; `migrations/0001_init.sql`; `test/`; `scripts/smoke.ts`.
 - `Db.kt` (Room, versione 2), `Consumption.kt` (stima consumi, `Calibration`, `ClearGuard`), `TripTracker.kt`.

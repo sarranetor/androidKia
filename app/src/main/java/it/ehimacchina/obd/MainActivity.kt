@@ -36,6 +36,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.takeOrElse
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.draw.clip
@@ -56,17 +57,32 @@ private enum class Page { HOME, DIAGNOSIS, IDLE, CONSUMI, SERVER, DEBUG }
 
 class MainActivity : ComponentActivity() {
 
+    private val uiPrefs by lazy { getSharedPreferences("ui", MODE_PRIVATE) }
+
+    /** Tema chiaro (giorno) o scuro (notte, predefinito); la scelta resta salvata. */
+    private var lightTheme by mutableStateOf(false)
+
+    private fun chooseTheme(light: Boolean) {
+        lightTheme = light
+        uiPrefs.edit().putBoolean("light", light).apply()
+        applySystemBars(light)
+    }
+
+    /** Barre di sistema trasparenti con icone leggibili sul tema scelto. */
+    private fun applySystemBars(light: Boolean) {
+        val t = android.graphics.Color.TRANSPARENT
+        if (light) enableEdgeToEdge(SystemBarStyle.light(t, t), SystemBarStyle.light(t, t))
+        else enableEdgeToEdge(SystemBarStyle.dark(t), SystemBarStyle.dark(t))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
-        // barre di sistema trasparenti con icone chiare (l'app è sempre scura); gli spazi li gestisce safeDrawingPadding()
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-        )
+        lightTheme = uiPrefs.getBoolean("light", false)
+        applySystemBars(lightTheme) // gli spazi delle barre li gestisce safeDrawingPadding()
         super.onCreate(savedInstanceState)
         ObdEngine.attach(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) // schermo sempre acceso
         setContent {
-            EhiTheme {
+            EhiTheme(light = lightTheme) {
                 Surface(Modifier.fillMaxSize(), color = Palette.Background) {
                     Box(Modifier.fillMaxSize().safeDrawingPadding()) { Screen() }
                 }
@@ -195,7 +211,13 @@ class MainActivity : ComponentActivity() {
                     Text("Kia Cee'd 1.6 · diagnostica OBD", style = MaterialTheme.typography.bodySmall, color = Palette.Muted)
                 }
             }
-            StatusPill(ui.status, if (ui.status.startsWith("Errore")) Palette.Crit else Palette.Muted)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                StatusPill(ui.status, if (ui.status.startsWith("Errore")) Palette.Crit else Palette.Muted)
+                Spacer(Modifier.weight(1f))
+                Text(if (lightTheme) "Tema chiaro" else "Tema scuro", style = MaterialTheme.typography.labelLarge, color = Palette.Muted)
+                Spacer(Modifier.width(8.dp))
+                Switch(checked = lightTheme, onCheckedChange = { chooseTheme(it) })
+            }
 
             SectionCard("Sorgente dati") {
                 ChoiceCard(mode == Mode.REAL, "Auto", "Adattatore ELM327 via Bluetooth", painterResource(R.drawable.ic_stat_gauge), { mode = Mode.REAL })
@@ -268,7 +290,7 @@ class MainActivity : ComponentActivity() {
 
     private class Tile(
         val label: String, val value: String, val unit: String,
-        val color: Color = Palette.Text, val level: Float? = null, val levelColor: Color = Palette.Accent,
+        val color: Color = Color.Unspecified, val level: Float? = null, val levelColor: Color = Color.Unspecified,
     )
 
     @OptIn(ExperimentalFoundationApi::class)
@@ -347,7 +369,8 @@ class MainActivity : ComponentActivity() {
                     row.forEach {
                         MetricTile(
                             it.label, it.value, it.unit, valueSp, Modifier.weight(1f).fillMaxHeight(),
-                            color = it.color, level = it.level, levelColor = it.levelColor,
+                            color = it.color.takeOrElse { Palette.Text }, level = it.level,
+                            levelColor = it.levelColor.takeOrElse { Palette.Accent },
                         )
                     }
                 }
