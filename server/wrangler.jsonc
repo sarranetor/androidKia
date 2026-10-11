@@ -2,6 +2,12 @@
   "name": "ehi-macchina",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
+  // serve alla libreria OAuth per verificare i "Client ID Metadata Document" in modo sicuro
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "kv_namespaces": [
+    // Token e client OAuth. Per lo sviluppo locale basta un id qualsiasi; in produzione: wrangler kv namespace create OAUTH_KV
+    { "binding": "OAUTH_KV", "id": "00000000000000000000000000000000" }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
