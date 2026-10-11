@@ -17,8 +17,9 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 
 ## Stato
 - **Fase 0: fatta e provata in auto (a motore spento).** App minima: connessione RFCOMM, init ELM, rilevamento PID, lettura continua, log raw, condivisione log, console debug nascosta (pressione lunga sul titolo), simulatore e riproduzione log.
-- **Fase 1: codice fatto, test PC ok, da provare su telefono/in auto.** Foreground service + `ObdEngine` (singleton, sopravvive a rotazione/chiusura Activity), riconnessione automatica (2/5/10 s), polling a priorità (`Poller`: veloci ogni ciclo, 2 lenti a rotazione, `ATRV` ogni 5 s), cruscotto orizzontale+verticale con avvisi (`Alerts`), diagnosi codici in sola lettura (0101 + modi 03/07, `Dtc.kt`) con lettura automatica alla connessione e pagina "Diagnosi". Suffisso "risposte attese" (`010C1`) provato all'avvio e tenuto solo se l'adattatore lo gestisce (vedi nota nel log).
-- Fasi 2–5: da fare (cancellazione codici con conferma, freeze frame modo 02, storico viaggi, consumi in fase 2).
+- **Fase 1: fatta e provata in auto (log 2, fermo al minimo).** Foreground service + `ObdEngine` (singleton, sopravvive a rotazione/chiusura Activity), riconnessione automatica (2/5/10 s), polling a priorità (`Poller`: veloci ogni ciclo, 2 lenti a rotazione, `ATRV` ogni 5 s), cruscotto orizzontale+verticale con avvisi (`Alerts`), diagnosi codici in sola lettura (0101 + modi 03/07, `Dtc.kt`) con lettura automatica alla connessione e pagina "Diagnosi". Suffisso "risposte attese" (`010C1`) provato all'avvio e tenuto solo se l'adattatore lo gestisce (vedi nota nel log).
+- **Fase 2 (in pianificazione)**: freeze frame (modo 02, PRIMA della cancellazione), cancellazione codici con conferma, Room (campioni/viaggi/codici), consumi speed-density, storico viaggi, rifornimenti. **Fase 2b: "Test di guida diagnostico" (15–20 min)**, vedi sotto.
+- Fasi 3–5: da fare.
 
 ## Struttura (`app/src/main/java/it/ehimacchina/obd/`)
 - `Transport.kt` interfaccia canale; `BluetoothTransport` (SPP, fallback canale 1 per cloni), `SimulatedTransport`, `ReplayTransport`, `LoggingTransport` (in `SessionLog.kt`).
@@ -30,6 +31,7 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - Accesso centralina **sola lettura**; `Elm327.isReadOnlyCommand` blocca il modo 04 e simili dalla console manuale. Cancellazione codici solo in fase 2, con conferma e auto ferma.
 - Soglie degli avvisi provvisorie: tarare con un log a motore acceso.
 - Risposta modo 03/07 su CAN: l'ELM mostra solo i byte reali; dopo `43`/`47` un numero dispari di byte = primo byte è il conteggio codici (da verificare col primo log reale con codici).
+- **Test di guida diagnostico (richiesta utente)**: per una diagnosi serve guidare 15–20 min (monitor di prontezza + catalizzatore caldo). L'app registra la guida, segue i monitor `0101` (byte C=supportati, D=incompleti), confronta O2 B1S1/B1S2, correzioni carburante, tempo anello chiuso, temp. catalizzatore e liquido, e produce un rapporto con indizi (non verdetti). Salvato in DB ed esportabile (poi tool MCP `controllo_salute`).
 - Il simulatore in-app sostituisce l'emulatore Python (niente codice doppio).
 
 ## Particolarità scoperte (log `app/src/test/resources/cee-d-ign-on-engine-off.log`, 11/10/2026, quadro acceso motore spento)
@@ -50,3 +52,4 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - Al minimo: MAP ~29–30 kPa, carico motore ~21–24%, farfalla ~6%, liquido 18→27 °C, giri ~1160–1560 (minimo a freddo). Velocità sempre 0 (auto ferma). PID 0x44 vale 2.0 prima dell'avvio, 1.0 dopo.
 - Non ancora verificati in auto: velocità in marcia, riconnessione dopo perdita Bluetooth, schermo bloccato col servizio, 0902 (VIN). Nessun gap/errore nel log.
 - A fine log, con quadro spento: `NO DATA` su tutti i PID (~250–340 ms l'uno). Il polling continua a 3 richieste/s: ok ma da pensare per il risparmio batteria (fase 5).
+- **Monitor di prontezza (da `0101` = `41 01 82 07 61 01`)**: motore a scintilla; supportati misfire/carburante/componenti (B=07, tutti completi), catalizzatore, sonda O2, riscaldatore O2 (C=61; EVAP non supportato). **D=01 → monitor del catalizzatore NON completato** (gli altri completi). Coerente con P0420 *pendente*: la centralina non ha ancora finito di valutare il catalizzatore; serve una guida a caldo per completarlo.
