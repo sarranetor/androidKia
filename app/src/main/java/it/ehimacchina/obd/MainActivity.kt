@@ -321,6 +321,10 @@ class MainActivity : ComponentActivity() {
                 Text(it, color = Yellow, modifier = Modifier.fillMaxWidth().background(Color(0xFF2A2A2A), RoundedCornerShape(8.dp)).padding(8.dp))
                 TextButton(onClick = { ObdEngine.dismissNotice() }) { Text("OK") }
             }
+            // test di guida in alto: è la cosa che si cerca di più e i codici/freeze frame sono lunghi
+            HorizontalDivider()
+            DriveTestSection(ui)
+            HorizontalDivider()
             if (!ui.running) Text("Connettiti all'auto per leggere i codici.", color = Color.Gray)
             if (d == null) {
                 if (ui.running) Text("Lettura in corso…", color = Color.Gray)
@@ -371,10 +375,6 @@ class MainActivity : ComponentActivity() {
                 Text("Monitor di prontezza", fontSize = 18.sp)
                 ReadinessList(r)
             }
-
-            // ---- test di guida diagnostico
-            HorizontalDivider()
-            DriveTestSection(ui)
 
             HorizontalDivider()
             Text("Storico codici", fontSize = 18.sp)
