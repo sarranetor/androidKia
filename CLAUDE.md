@@ -88,7 +88,7 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - Prova: `BASE=<url> TOKEN=$(cat ~/.config/ehi-macchina/token) npx tsx scripts/smoke.ts` (scrive dati di prova nel DB vero: poi `DELETE` come in `server/README.md`).
 - L'indirizzo workers.dev nuovo ha impiegato ~1 minuto a risolvere i DNS.
 - **Dati del simulatore/riproduzione NON vengono inviati** (di default) per non sporcare il DB vero; l'interruttore «Invia anche i dati del simulatore» nella pagina Server serve alle prove (Fase 4), poi ripulire il DB remoto.
-- **Non premere «Invia storico» finché nell'app ci sono solo dati del simulatore** (il DB del telefono contiene viaggi e il codice P0133 finti).
+- DB del telefono ripulito dai dati del simulatore l'11/10/2026.
 
 ### Fase 4: dati di prova e segreti
 - Connettore: `https://ehi-macchina.ehi-macchina-server.workers.dev/mcp`. Password di approvazione: `~/.config/ehi-macchina/owner-password` (segreto `OWNER_PASSWORD`; rigenerare con python `secrets` come in sessione 11/10/2026 e `wrangler secret put OWNER_PASSWORD < file`). KV `OAUTH_KV` id `b77da07a62d14635984cd21657de25a2`.
@@ -100,4 +100,4 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 
 ### Design (11/10/2026)
 - Restyling completo della UI senza cambiare logica: verificato con screenshot sul telefono (verticale e orizzontale) di home, cruscotto, diagnosi, consumi, server. Screenshot: `adb exec-out screencap -p` (serve il telefono sbloccato; `adb shell svc power stayon usb` lo tiene acceso).
-- Server ripulito dai dati del simulatore e interruttore «Invia anche i dati del simulatore» spento (11/10/2026). Il DB locale dell'app contiene ancora viaggi/codice P0133 del simulatore: non usare «Invia storico» finché non ci sono dati veri.
+- Server ripulito dai dati del simulatore e interruttore «Invia anche i dati del simulatore» spento (11/10/2026). Anche il DB locale dell'app è stato cancellato (11/10/2026, rimossi i file `databases/ehi-macchina.db*` via `run-as`; restano log e impostazioni): da qui in poi solo dati veri.
