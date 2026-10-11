@@ -40,3 +40,13 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - **PID 21 = 267 km con spia MIL (check engine) accesa** → probabile codice errore memorizzato: leggere `0101` (stato MIL/numero DTC) e `03` in fase 2.
 - Batteria `ATRV` = 10.7 V a motore spento: bassa (12.4–12.7 V attesi). Può essere batteria scarica o lettura imprecisa del clone: ripetere con motore acceso (alternatore ~13.8–14.4 V).
 - Il primo log è a motore spento: manca ancora un log con motore acceso e in marcia.
+
+### Log 2 — `app/src/test/resources/cee-d-idle-engine-on-dtc.log` (11/10/2026, motore acceso al minimo da freddo, auto ferma, 68 s)
+- **Fase 1 verificata in auto**: connessione stabile, nessun errore. Il **suffisso risposte attese (`010C1`) funziona** su questo adattatore: richieste ~92 ms (prima ~130), periodo giri ~0.7 s (prima ~2 s). Resta il limite di ~1.4 Hz sui giri: se serve più fluido, giri e velocità in una corsia ancora più veloce (fase 5).
+- **Codici**: `0101` = `41 01 82 07 61 01` → MIL accesa, 2 codici. `03` = `43 02 06 50 01 72` → memorizzati **P0650** (circuito spia MIL) e **P0172** (miscela ricca banco 1). `07` = `47 02 06 50 04 20` → pendenti P0650 e **P0420** (efficienza catalizzatore). Formato CAN con byte conteggio confermato: il parser funziona.
+- Cronologia: PID 31 = 449 km da cancellazione codici, PID 21 = 267 km con MIL accesa, PID 30 = 41 riscaldamenti → codici cancellati 449 km fa, guasto comparso dopo ~182 km. **Non cancellare i codici prima di aver salvato il freeze frame (modo 02)**: in fase 2 leggerlo per primo.
+- Batteria `ATRV`: 10.7 V a quadro acceso/motore spento, **13.6–13.7 V a motore acceso** (alternatore ok, un po' basso). 10.7 V a riposo è molto bassa: far controllare la batteria con un tester.
+- Sonde: O2 B1S1 (14) oscilla 0.07–0.71 V (anello chiuso, normale); O2 B1S2 (15) fissa a 0.455 V con byte trim 0xFF ("non usata") per tutto il test; catalizzatore (3C) sale da 18 a 118 °C in 60 s (test troppo breve per valutare P0420). Correzione carburante: STFT 0 → −9% dopo l'avvio, LTFT +3.1% costante.
+- Al minimo: MAP ~29–30 kPa, carico motore ~21–24%, farfalla ~6%, liquido 18→27 °C, giri ~1160–1560 (minimo a freddo). Velocità sempre 0 (auto ferma). PID 0x44 vale 2.0 prima dell'avvio, 1.0 dopo.
+- Non ancora verificati in auto: velocità in marcia, riconnessione dopo perdita Bluetooth, schermo bloccato col servizio, 0902 (VIN). Nessun gap/errore nel log.
+- A fine log, con quadro spento: `NO DATA` su tutti i PID (~250–340 ms l'uno). Il polling continua a 3 richieste/s: ok ma da pensare per il risparmio batteria (fase 5).

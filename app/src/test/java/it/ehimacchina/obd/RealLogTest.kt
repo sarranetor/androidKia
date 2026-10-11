@@ -35,3 +35,37 @@ class RealLogTest {
         assertEquals(10.7, e.batteryVoltage()!!, 0.001)
     }
 }
+
+/** Log reale del 11/10/2026: motore acceso al minimo da freddo, auto ferma, con codici in memoria. */
+class RealLogIdleTest {
+    private fun elm(): Elm327 {
+        val lines = javaClass.getResource("/cee-d-idle-engine-on-dtc.log")!!.readText().lines()
+        return Elm327(ReplayTransport(lines))
+    }
+
+    @Test fun diagnosisFromRealEcu() = runBlocking {
+        val e = elm()
+        e.init()
+        val d = e.readDiagnosis()
+        assertEquals(true, d.milOn)
+        assertEquals(2, d.reportedCount)
+        assertEquals(listOf("P0650", "P0172"), d.stored)
+        assertEquals(listOf("P0650", "P0420"), d.pending)
+    }
+
+    @Test fun responseCountSuffixWorksOnThisAdapter() = runBlocking {
+        val e = elm()
+        e.init()
+        e.detectSupportedPids()
+        assertTrue(e.tryResponseCount())
+    }
+
+    @Test fun idleValues() = runBlocking {
+        val e = elm()
+        e.init(); e.detectSupportedPids(); e.tryResponseCount()
+        val rpm = e.read(Pids.get(0x0C)!!)!!
+        assertEquals(0.0, rpm, 0.001) // primo campione: motore ancora spento
+        assertEquals(449.0, e.read(Pids.get(0x31)!!)!!, 0.001)
+        assertEquals(41.0, e.read(Pids.get(0x30)!!)!!, 0.001)
+    }
+}
