@@ -129,7 +129,9 @@ object ObdEngine {
 
     /** Mette un evento in coda per il server (solo se l'invio è configurato e attivo). */
     private suspend fun enqueue(json: String) {
-        if (!settings.config.value.ready) return
+        val c = settings.config.value
+        if (!c.ready) return
+        if (currentMode != Mode.REAL && !c.sendSimulated) return // dati finti: restano sul telefono
         val dao = db.dao()
         dao.insertOutbox(OutboxEntity(createdMs = System.currentTimeMillis(), json = json))
         dao.trimOutbox(MAX_OUTBOX)
@@ -137,6 +139,7 @@ object ObdEngine {
     }
 
     /** Attese fra un tentativo di riconnessione e il successivo (l'ultima si ripete) */
+    private var currentMode = Mode.REAL
     private const val MAX_OUTBOX = 5000
     private const val SNAPSHOT_EVERY_MS = 15_000L
     private var lastSnapshotSentMs = 0L
@@ -160,6 +163,7 @@ object ObdEngine {
             _state.update { it.copy(status = "Scegli prima un dispositivo / un file") }
             return
         }
+        currentMode = mode
         val log = SessionLog.newSession(app.filesDir, tag)
         currentLog.value = log
         // running = true subito (non dentro la coroutine): il Service lo guarda appena parte

@@ -526,10 +526,11 @@ class MainActivity : ComponentActivity() {
         var url by rememberSaveable { mutableStateOf(saved.url) }
         var token by rememberSaveable { mutableStateOf(saved.token) }
         var enabled by rememberSaveable { mutableStateOf(saved.enabled) }
+        var sendSim by rememberSaveable { mutableStateOf(saved.sendSimulated) }
         var message by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
         val fmt = SimpleDateFormat("dd/MM/yy HH:mm:ss", Locale.ITALY)
-        val draft = SyncConfig(url, token, enabled)
+        val draft = SyncConfig(url, token, enabled, sendSim)
 
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -557,6 +558,10 @@ class MainActivity : ComponentActivity() {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Switch(checked = enabled, onCheckedChange = { enabled = it })
                 Text("  Invio attivo")
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = sendSim, onCheckedChange = { sendSim = it })
+                Text("  Invia anche i dati del simulatore (solo per prove)", fontSize = 14.sp)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
@@ -586,7 +591,7 @@ class MainActivity : ComponentActivity() {
                 ) { Text("Invia storico") }
             }
             Text(
-                "«Invia storico» manda al server viaggi, codici e rapporti già presenti nell'app (utile al primo collegamento; si può ripetere senza creare doppioni).",
+                "«Invia storico» manda al server viaggi, codici e rapporti già presenti nell'app, anche quelli nati col simulatore: usalo solo quando nell'app ci sono dati veri dell'auto. Si può ripetere senza creare doppioni.",
                 fontSize = 12.sp, color = Color.Gray,
             )
         }

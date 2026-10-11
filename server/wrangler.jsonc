@@ -8,7 +8,7 @@
       "database_name": "ehi-macchina",
       // Segnaposto per lo sviluppo locale. Dopo `wrangler d1 create ehi-macchina`
       // si sostituisce con l'id vero (vedi README).
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "b5174c0f-b217-42f9-8ae9-22b02556771c",
       "migrations_dir": "migrations"
     }
   ]

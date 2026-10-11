@@ -14,7 +14,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /** Impostazioni del server, nelle preferenze private dell'app. */
-data class SyncConfig(val url: String = "", val token: String = "", val enabled: Boolean = false) {
+data class SyncConfig(
+    val url: String = "",
+    val token: String = "",
+    val enabled: Boolean = false,
+    /** Solo per prove: invia anche i dati di simulatore e riproduzione (di norma restano sul telefono, per non sporcare il server vero) */
+    val sendSimulated: Boolean = false,
+) {
     val ready get() = enabled && url.isNotBlank() && token.isNotBlank()
 
     /** Base senza barra finale e con https:// se manca lo schema (http:// resta ammesso solo per localhost, vedi network_security_config) */
@@ -28,12 +34,13 @@ data class SyncConfig(val url: String = "", val token: String = "", val enabled:
 class SyncSettings(context: Context) {
     private val prefs = context.getSharedPreferences("sync", Context.MODE_PRIVATE)
     private val _config = MutableStateFlow(
-        SyncConfig(prefs.getString("url", "") ?: "", prefs.getString("token", "") ?: "", prefs.getBoolean("enabled", false)),
+        SyncConfig(prefs.getString("url", "") ?: "", prefs.getString("token", "") ?: "", prefs.getBoolean("enabled", false), prefs.getBoolean("sendSimulated", false)),
     )
     val config: StateFlow<SyncConfig> = _config
 
     fun save(c: SyncConfig) {
-        prefs.edit().putString("url", c.url.trim()).putString("token", c.token.trim()).putBoolean("enabled", c.enabled).apply()
+        prefs.edit().putString("url", c.url.trim()).putString("token", c.token.trim()).putBoolean("enabled", c.enabled)
+            .putBoolean("sendSimulated", c.sendSimulated).apply()
         _config.value = c.copy(url = c.url.trim(), token = c.token.trim())
     }
 }

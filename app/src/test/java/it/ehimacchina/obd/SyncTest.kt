@@ -83,6 +83,7 @@ class SyncManagerTest {
         assertFalse(SyncConfig("", "b", true).ready)
         assertFalse(SyncConfig("a", "", true).ready)
         assertTrue(cfg.ready)
+        assertFalse("di norma i dati del simulatore non partono", cfg.sendSimulated)
     }
 
     @Test fun sendsBatchAndClearsQueue() = runBlocking {
