@@ -13,6 +13,8 @@ data class Diagnosis(
     val atMillis: Long,
     /** Fotografia dei valori nel momento del guasto (modo 02), se la centralina la fornisce */
     val freezeFrame: FreezeFrame? = null,
+    /** Monitor di prontezza (PID 0101), se letti */
+    val readiness: Readiness? = null,
 )
 
 /** Freeze frame: il codice che l'ha causato e i valori (chiave = PID) letti in quel momento. */

@@ -201,6 +201,7 @@ class Elm327(
             pending = pending,
             atMillis = System.currentTimeMillis(),
             freezeFrame = if (hasCodes) readFreezeFrame() else null,
+            readiness = status?.let { Readiness.parse(it) },
         )
     }
 

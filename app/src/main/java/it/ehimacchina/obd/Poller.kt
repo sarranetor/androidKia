@@ -6,11 +6,14 @@ package it.ehimacchina.obd
  */
 class Poller(
     private val elm: Elm327,
-    pids: List<Pid>,
+    private val fast: List<Pid>,
+    private val slow: List<Pid>,
     private val slowPerCycle: Int = 2,
 ) {
-    private val fast = pids.filter { it.fast }
-    private val slow = pids.filter { !it.fast }
+    /** Divide [pids] in veloci e lenti secondo [Pid.fast] */
+    constructor(elm: Elm327, pids: List<Pid>, slowPerCycle: Int = 2) :
+        this(elm, pids.filter { it.fast }, pids.filter { !it.fast }, slowPerCycle)
+
     private var next = 0
 
     val isEmpty get() = fast.isEmpty() && slow.isEmpty()

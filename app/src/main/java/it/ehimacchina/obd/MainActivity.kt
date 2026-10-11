@@ -73,6 +73,14 @@ class MainActivity : ComponentActivity() {
         return adapter?.bondedDevices?.toList() ?: emptyList()
     }
 
+    private fun shareText(text: String, title: String) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        startActivity(Intent.createChooser(intent, title))
+    }
+
     private fun shareLog(file: File) {
         val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
@@ -252,6 +260,13 @@ class MainActivity : ComponentActivity() {
                 TextButton(onClick = onDiagnosis) { Text("Codici") }
                 TextButton(onClick = { ObdEngine.stop() }) { Text("Stop") }
             }
+            ui.drive?.let { dr ->
+                Text(
+                    "Test di guida in corso · ${DriveTestAnalyzer.mmss(dr.elapsedMs)} · ${dr.criteria.count { it.done }}/${dr.criteria.size} condizioni",
+                    fontSize = 14.sp, color = Green, maxLines = 1,
+                    modifier = Modifier.combinedClickable(onClick = onDiagnosis),
+                )
+            }
             alerts.forEach {
                 Text(
                     it.text, fontSize = 18.sp, color = Color.Black, textAlign = TextAlign.Center,
@@ -350,6 +365,17 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
+            // ---- monitor di prontezza
+            d?.readiness?.let { r ->
+                HorizontalDivider()
+                Text("Monitor di prontezza", fontSize = 18.sp)
+                ReadinessList(r)
+            }
+
+            // ---- test di guida diagnostico
+            HorizontalDivider()
+            DriveTestSection(ui)
+
             HorizontalDivider()
             Text("Storico codici", fontSize = 18.sp)
             if (history.isEmpty()) Text("nessun codice registrato finora", color = Color.Gray)
@@ -385,6 +411,83 @@ class MainActivity : ComponentActivity() {
                 },
                 dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Annulla") } },
             )
+        }
+    }
+
+    @Composable
+    private fun ReadinessList(r: Readiness) {
+        r.monitors.forEach {
+            Text(
+                (if (it.complete) "✓ " else "○ ") + it.name + if (it.complete) "" else " — incompleto",
+                fontSize = 14.sp, color = if (it.complete) Green else Yellow,
+            )
+        }
+        Text(
+            "Un monitor incompleto = la centralina non ha ancora finito di valutare quel sistema (succede dopo una cancellazione dei codici o con poca guida a caldo).",
+            fontSize = 12.sp, color = Color.Gray,
+        )
+    }
+
+    @Composable
+    private fun DriveTestSection(ui: UiState) {
+        val reports by remember { ObdEngine.db.dao().driveReportsFlow() }.collectAsState(emptyList())
+        var openId by rememberSaveable { mutableStateOf<Long?>(null) }
+        val fmt = SimpleDateFormat("dd/MM/yy HH:mm", Locale.ITALY)
+        val drive = ui.drive
+
+        Text("Test di guida diagnostico", fontSize = 18.sp)
+        if (drive == null) {
+            Text(
+                "Per una diagnosi attendibile serve guidare 15–20 minuti: motore a temperatura, un tratto costante a 50–100 km/h " +
+                    "e un minimo finale. L'app registra tutto in background e crea un rapporto con indizi su sonde, " +
+                    "catalizzatore, miscela, batteria e monitor di prontezza. Non usare il telefono mentre guidi.",
+                fontSize = 13.sp, color = Color.Gray,
+            )
+            Button(onClick = { ObdEngine.startDriveTest() }, enabled = ui.running) { Text("Avvia test di guida") }
+            if (!ui.running) Text("Connettiti all'auto per avviare il test.", fontSize = 13.sp, color = Color.Gray)
+        } else {
+            Text("In corso: ${DriveTestAnalyzer.mmss(drive.elapsedMs)}", fontSize = 22.sp, color = Green)
+            drive.criteria.forEach {
+                Text(
+                    (if (it.done) "✓ " else "○ ") + it.label + " — " + it.progress,
+                    fontSize = 14.sp, color = if (it.done) Green else Color.White,
+                )
+            }
+            drive.readiness?.let { ReadinessList(it) }
+            Text("Condizioni indicative, non il ciclo ufficiale Kia. Puoi terminare quando vuoi.", fontSize = 12.sp, color = Color.Gray)
+            Button(onClick = { ObdEngine.stopDriveTest() }) { Text("Termina e crea rapporto") }
+        }
+
+        ui.driveReport?.let { text ->
+            Text("Rapporto", fontSize = 16.sp)
+            Text(text, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { shareText(text, "Condividi rapporto") }) { Text("Condividi rapporto") }
+                OutlinedButton(onClick = { ObdEngine.dismissDriveReport() }) { Text("Chiudi") }
+            }
+        }
+
+        if (reports.isNotEmpty()) {
+            Text("Rapporti precedenti", fontSize = 16.sp)
+            reports.forEach { r ->
+                Column(
+                    Modifier.fillMaxWidth().background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)).padding(8.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "${fmt.format(Date(r.startMs))} · ${DriveTestAnalyzer.mmss(r.endMs - r.startMs)}",
+                            fontSize = 14.sp, modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { openId = if (openId == r.id) null else r.id }) {
+                            Text(if (openId == r.id) "Nascondi" else "Apri")
+                        }
+                    }
+                    if (openId == r.id) {
+                        Text(r.text, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        TextButton(onClick = { shareText(r.text, "Condividi rapporto") }) { Text("Condividi") }
+                    }
+                }
+            }
         }
     }
 

@@ -8,14 +8,17 @@ import kotlin.math.sin
  * Scenario: 0–8 s quadro acceso e motore spento, 8–16 s minimo da fermo, poi marcia con valori
  * che oscillano. C'è un codice errore (P0133) che sparisce dopo "04".
  */
-class SimulatedTransport(private val clock: () -> Long = System::currentTimeMillis) : Transport {
+class SimulatedTransport(
+    private val latencyMs: Long = 30,
+    private val clock: () -> Long = System::currentTimeMillis,
+) : Transport {
     private val startMs = clock()
 
     /** Dopo "04" i codici spariscono, come su un'auto vera */
     private var cleared = false
 
     private val supported = setOf(
-        0x01, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x11, 0x1F, 0x21, 0x33, 0x44,
+        0x01, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x11, 0x14, 0x15, 0x1F, 0x21, 0x33, 0x3C, 0x44,
     )
     private val freezeSupported = setOf(0x02, 0x04, 0x05, 0x0B, 0x0C, 0x0D, 0x0F)
 
@@ -23,7 +26,7 @@ class SimulatedTransport(private val clock: () -> Long = System::currentTimeMill
     override fun close() {}
 
     override suspend fun exchange(cmd: String, timeoutMs: Long): String {
-        delay(30) // un po' di latenza come un adattatore vero
+        delay(latencyMs) // un po' di latenza come un adattatore vero
         val c = cmd.trim().uppercase()
         val t = (clock() - startMs) / 1000.0
         return when {
@@ -45,7 +48,15 @@ class SimulatedTransport(private val clock: () -> Long = System::currentTimeMill
     private fun mode01(pid: Int, t: Double): String {
         if (pid % 0x20 == 0) return maskResponse(pid, supported)
         if (pid !in supported) return "NO DATA"
-        if (pid == 0x01) return if (cleared) "41 01 00 07 61 00" else "41 01 81 07 E5 00" // spia accesa, 1 codice
+        if (pid == 0x01) {
+            // spia accesa + 1 codice; monitor del catalizzatore incompleto fino a 3 minuti, poi completo.
+            // Dopo la cancellazione tutti i monitor tornano incompleti, come su un'auto vera.
+            return when {
+                cleared -> "41 01 00 07 61 61"
+                t < 180 -> "41 01 81 07 61 01"
+                else -> "41 01 81 07 61 00"
+            }
+        }
 
         val engineOn = t >= 8
         val driving = t >= 16
@@ -61,9 +72,13 @@ class SimulatedTransport(private val clock: () -> Long = System::currentTimeMill
             0x0E -> listOf(((12 + 4 * wave) * 2 + 128).toInt())
             0x0F -> listOf(25 + 40)
             0x11 -> listOf((if (!driving) 6.0 else 20 + 10 * wave).percent())
+            // sonda a monte: oscilla attorno a 0.45 V; a valle: stabile (catalizzatore "sano")
+            0x14 -> listOf((200 * (0.45 + (if (engineOn) 0.35 else 0.0) * sin(t * 2.1))).toInt(), 128)
+            0x15 -> listOf((200 * (if (engineOn) 0.70 + 0.03 * sin(t * 0.7) else 0.45)).toInt(), 255)
             0x1F -> word(maxOf(0.0, t - 8).toInt())
             0x21 -> word(0)
             0x33 -> listOf(100)
+            0x3C -> word(((minOf(450.0, 20 + 5 * maxOf(0.0, t - 8)) + 40) * 10).toInt())
             0x44 -> word(32768) // lambda 1.0
             else -> return "NO DATA"
         }

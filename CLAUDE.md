@@ -19,13 +19,14 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - **Fase 0: fatta e provata in auto (a motore spento).** App minima: connessione RFCOMM, init ELM, rilevamento PID, lettura continua, log raw, condivisione log, console debug nascosta (pressione lunga sul titolo), simulatore e riproduzione log.
 - **Fase 1: fatta e provata in auto (log 2, fermo al minimo).** Foreground service + `ObdEngine` (singleton, sopravvive a rotazione/chiusura Activity), riconnessione automatica (2/5/10 s), polling a priorità (`Poller`: veloci ogni ciclo, 2 lenti a rotazione, `ATRV` ogni 5 s), cruscotto orizzontale+verticale con avvisi (`Alerts`), diagnosi codici in sola lettura (0101 + modi 03/07, `Dtc.kt`) con lettura automatica alla connessione e pagina "Diagnosi". Suffisso "risposte attese" (`010C1`) provato all'avvio e tenuto solo se l'adattatore lo gestisce (vedi nota nel log).
 - **Fase 2: codice fatto, test PC ok, da provare in auto.** Freeze frame (modo 02) letto con la diagnosi, cancellazione codici (modo 04) con doppio controllo (`ClearGuard` + dialogo di conferma; salva prima codici e freeze frame nello storico), Room (`Db.kt`: viaggi, campioni ogni 2 s, storico codici, rifornimenti), consumi speed-density (`Consumption.kt`, VE 0.85, fattore di taratura da rifornimenti = litri + km dal pieno precedente, `Calibration`), `TripTracker` (viaggio = giri>400, fine dopo 2 min a motore spento), pagine Consumi e Codici/storico, cruscotto a 10 riquadri (+consumo istantaneo e media viaggio).
-- **Fase 2b (da fare, consegna separata): "Test di guida diagnostico" (15–20 min)**, vedi Decisioni.
+- **Fase 2b: codice fatto, test PC ok, da provare in auto.** "Test di guida diagnostico": `DriveTest.kt` (`DriveTestAnalyzer`: checklist condizioni + rapporto con indizi OK/info/ATTENZIONE), `Readiness.kt` (monitor di prontezza da 0101, mostrati anche nella pagina Codici), poller dedicato (O2 monte/valle, giri, velocità, carico, MAP a ogni ciclo + 3 lenti a rotazione), confronto codici prima/dopo, rapporto salvato nel DB (`drive_reports`, migrazione Room 1→2) e condivisibile come testo.
 - Fasi 3–5: da fare.
 
 ## Struttura (`app/src/main/java/it/ehimacchina/obd/`)
 - `Transport.kt` interfaccia canale; `BluetoothTransport` (SPP, fallback canale 1 per cloni), `SimulatedTransport`, `ReplayTransport`, `LoggingTransport` (in `SessionLog.kt`).
 - `Elm327.kt` protocollo (senza dipendenze Android → testabile). `Pid.kt` tabella PID e decodifica.
-- `Db.kt` (Room), `Consumption.kt` (stima consumi, `Calibration`, `ClearGuard`), `TripTracker.kt`.
+- `DriveTest.kt`, `Readiness.kt`.
+- `Db.kt` (Room, versione 2), `Consumption.kt` (stima consumi, `Calibration`, `ClearGuard`), `TripTracker.kt`.
 - `ObdEngine.kt` (connessione, sessione, riconnessione, comandi in coda), `ObdService.kt` (notifica/foreground), `Poller.kt`, `Alerts.kt` (soglie: liquido 98/105 °C, batteria 12.0/11.5 V solo a motore acceso, >15 V), `Dtc.kt` (decodifica codici, `Diagnosis`), `MainActivity.kt` (Compose: connessione, cruscotto, diagnosi, debug).
 - Formato log (TAB): `epochMs  comando  risposta('|' = a capo)  durataMs`; righe `#ERR`/`#NOTE` per errori/note. Stesso formato letto dalla riproduzione.
 
@@ -62,3 +63,9 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - Plausibilità consumi: al minimo ~0.5–1.5 L/h, crociera 90 km/h ~5–9 L/100 km. Se lontani, tarare con i rifornimenti.
 - Rilevamento viaggio (parte a motore acceso, finisce 2 min dopo lo spegnimento) e salvataggio nel DB.
 - Cancellazione codici: solo se si vuole davvero; il guasto P0172/P0650 può tornare.
+
+### Da verificare in auto con la Fase 2b
+- Il test di guida con una guida vera di 15–20 min: il confronto sonda valle/monte (rapporto deviazioni standard) è tarato su soglie da officina e campioni a ~1 Hz, **non validato su dati reali**. Se il rapporto dà risultati strani, mandare il log + il testo del rapporto per ritarare.
+- Se la sonda a valle (PID 15) resta ferma a ~0.45 V come nel log 2, il rapporto lo segnala come non valutabile (non conclude su P0420).
+- I monitor di prontezza dovrebbero passare da "Catalizzatore incompleto" a completo dopo una guida a caldo.
+- Il rapporto è testo piano: sarà letto anche dal futuro tool MCP `controllo_salute`.

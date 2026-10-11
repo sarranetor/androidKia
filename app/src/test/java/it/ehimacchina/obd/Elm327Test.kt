@@ -81,7 +81,7 @@ class Elm327Test {
 
     @Test fun simulatorEndToEnd() = runBlocking {
         var now = 0L
-        val elm = Elm327(SimulatedTransport { now })
+        val elm = Elm327(SimulatedTransport(latencyMs = 0) { now })
         now = 30_000 // 30 s dopo l'avvio: già in marcia
         elm.init()
         val pids = elm.detectSupportedPids()

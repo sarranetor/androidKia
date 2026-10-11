@@ -11,6 +11,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 /** Un viaggio: dal motore acceso allo spegnimento. [fuelL] è il consumo stimato SENZA taratura. */
@@ -62,8 +64,20 @@ data class RefuelEntity(
     val km: Double,
 )
 
+/** Rapporto di un test di guida diagnostico, già in testo (si condivide e si legge così). */
+@Entity(tableName = "drive_reports")
+data class DriveReportEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val startMs: Long,
+    val endMs: Long,
+    val text: String,
+)
+
 @Dao
 interface ObdDao {
+    @Insert suspend fun insertDriveReport(r: DriveReportEntity): Long
+    @Query("SELECT * FROM drive_reports ORDER BY startMs DESC") fun driveReportsFlow(): Flow<List<DriveReportEntity>>
+
     @Insert suspend fun insertTrip(t: TripEntity): Long
     @Update suspend fun updateTrip(t: TripEntity)
     @Query("SELECT * FROM trips ORDER BY startMs DESC") fun tripsFlow(): Flow<List<TripEntity>>
@@ -87,18 +101,29 @@ interface ObdDao {
 }
 
 @Database(
-    entities = [TripEntity::class, SampleEntity::class, DtcEntity::class, RefuelEntity::class],
-    version = 1,
+    entities = [TripEntity::class, SampleEntity::class, DtcEntity::class, RefuelEntity::class, DriveReportEntity::class],
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dao(): ObdDao
 
     companion object {
+        /** v2: tabella dei rapporti di test di guida (non tocca i dati esistenti) */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `drive_reports` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`startMs` INTEGER NOT NULL, `endMs` INTEGER NOT NULL, `text` TEXT NOT NULL)",
+                )
+            }
+        }
+
         @Volatile private var instance: AppDatabase? = null
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "ehi-macchina.db")
+                .addMigrations(MIGRATION_1_2)
                 .build().also { instance = it }
         }
     }

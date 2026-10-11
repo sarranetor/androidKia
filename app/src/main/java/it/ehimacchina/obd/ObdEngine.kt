@@ -36,6 +36,14 @@ data class TripInfo(val startMs: Long, val km: Double, val fuelL: Double) {
     val avgLitersPer100Km: Double? get() = if (km >= 0.3) fuelL / km * 100 else null
 }
 
+/** Test di guida in corso: stato per la schermata */
+data class DriveUi(
+    val startMs: Long,
+    val elapsedMs: Long,
+    val criteria: List<Criterion>,
+    val readiness: Readiness?,
+)
+
 data class UiState(
     val running: Boolean = false,
     val status: String = "Non connesso",
@@ -56,6 +64,10 @@ data class UiState(
     val calibration: Double = 1.0,
     /** Messaggio una tantum per l'utente (es. esito cancellazione codici) */
     val notice: String? = null,
+    /** Test di guida diagnostico in corso (null se non attivo) */
+    val drive: DriveUi? = null,
+    /** Testo dell'ultimo rapporto di test di guida, da mostrare/condividere */
+    val driveReport: String? = null,
 )
 
 /**
@@ -74,6 +86,8 @@ object ObdEngine {
         data class Manual(val cmd: String) : Command
         data object Diagnose : Command
         data object ClearCodes : Command
+        data object StartDrive : Command
+        data object StopDrive : Command
     }
 
     private val commands = Channel<Command>(Channel.UNLIMITED)
@@ -84,6 +98,11 @@ object ObdEngine {
     private var lastTripSaveMs = 0L
     /** Fattore di taratura dei consumi, ricalcolato dai rifornimenti */
     private var calibration = 1.0
+
+    // test di guida diagnostico
+    private var drive: DriveTestAnalyzer? = null
+    private var driveStartDiag: Diagnosis? = null
+    private var lastReadinessMs = 0L
 
     val db: AppDatabase get() = AppDatabase.get(app)
     private val currentLog = MutableStateFlow<SessionLog?>(null)
@@ -149,8 +168,11 @@ object ObdEngine {
                     delay(wait * 1000)
                 }
             } finally {
-                withContext(NonCancellable) { endTrip(tracker.finish(System.currentTimeMillis())) }
-                _state.update { it.copy(running = false, trip = null, litersPerHour = null) }
+                withContext(NonCancellable) {
+                    finishDrive(null) // se un test di guida era in corso, il rapporto si crea con i dati raccolti
+                    endTrip(tracker.finish(System.currentTimeMillis()))
+                }
+                _state.update { it.copy(running = false, trip = null, litersPerHour = null, drive = null) }
             }
         }
     }
@@ -180,6 +202,17 @@ object ObdEngine {
     fun requestClearCodes() {
         commands.trySend(Command.ClearCodes)
     }
+
+    /** Avvia il test di guida diagnostico (15–20 min): registra a velocità più alta i PID utili e crea un rapporto. */
+    fun startDriveTest() {
+        if (drive == null) commands.trySend(Command.StartDrive)
+    }
+
+    fun stopDriveTest() {
+        commands.trySend(Command.StopDrive)
+    }
+
+    fun dismissDriveReport() = _state.update { it.copy(driveReport = null) }
 
     fun dismissNotice() = _state.update { it.copy(notice = null) }
 
@@ -229,7 +262,12 @@ object ObdEngine {
         elm.tryResponseCount()
         _state.update { it.copy(supported = supported, status = "Lettura in corso") }
 
-        val poller = Poller(elm, supported.mapNotNull { Pids.get(it) })
+        val normalPoller = Poller(elm, supported.mapNotNull { Pids.get(it) })
+        // durante il test di guida: sonde O2 e giri a ogni ciclo, 3 PID lenti a rotazione
+        fun known(ids: List<Int>) = ids.filter { it in supported }.mapNotNull { Pids.get(it) }
+        val drivePoller = Poller(
+            elm, known(listOf(0x14, 0x15, 0x0C, 0x0D, 0x04, 0x0B)), known(listOf(0x05, 0x06, 0x07, 0x3C, 0x44, 0x0F, 0x43)), 3,
+        )
         var lastBattery = 0L
         // all'avvio una diagnosi automatica, così il cruscotto sa subito se ci sono codici
         commands.trySend(Command.Diagnose)
@@ -238,12 +276,14 @@ object ObdEngine {
         while (true) {
             handleCommands(elm)
 
+            val poller = if (drive != null) drivePoller else normalPoller
             poller.cycle { pid, value ->
                 _state.update {
                     it.copy(values = if (value == null) it.values - pid.id else it.values + (pid.id to value))
                 }
             }
             trackTrip()
+            trackDrive(elm, 0x3C in supported)
             if (System.currentTimeMillis() - lastBattery > 5000) {
                 lastBattery = System.currentTimeMillis()
                 val v = elm.batteryVoltage()
@@ -273,8 +313,63 @@ object ObdEngine {
                     _state.update { it.copy(diagnosis = d, diagnosing = false) }
                 }
                 Command.ClearCodes -> clearCodes(elm)
+                Command.StartDrive -> startDrive(elm)
+                Command.StopDrive -> finishDrive(elm)
             }
         }
+    }
+
+    private suspend fun startDrive(elm: Elm327) {
+        if (drive != null) return
+        val now = System.currentTimeMillis()
+        val diag = elm.readDiagnosis() // punto di partenza: codici e monitor prima della guida
+        recordDiagnosis(diag)
+        driveStartDiag = diag
+        drive = DriveTestAnalyzer(now).also {
+            it.readinessStart = diag.readiness
+            it.readinessNow = diag.readiness
+        }
+        lastReadinessMs = now
+        _state.update { it.copy(diagnosis = diag, driveReport = null, notice = null) }
+    }
+
+    /** Aggiunge il campione al test di guida e aggiorna l'avanzamento; ogni 10 s rilegge i monitor di prontezza. */
+    private suspend fun trackDrive(elm: Elm327, hasCatalystTemp: Boolean) {
+        val d = drive ?: return
+        val now = System.currentTimeMillis()
+        val s = _state.value
+        d.add(now, s.values, s.battery)
+        if (now - lastReadinessMs >= 10_000) {
+            lastReadinessMs = now
+            elm.query(0x01)?.let { Readiness.parse(it) }?.let { d.readinessNow = it }
+        }
+        _state.update {
+            it.copy(drive = DriveUi(d.startMs, now - d.startMs, d.criteria(now, hasCatalystTemp), d.readinessNow))
+        }
+    }
+
+    /**
+     * Chiude il test di guida e crea il rapporto (salvato nel database). Con [elm] null
+     * (collegamento chiuso) si usano solo i dati già raccolti.
+     */
+    private suspend fun finishDrive(elm: Elm327?) {
+        val d = drive ?: return
+        drive = null
+        val endDiag = try {
+            elm?.readDiagnosis()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+        endDiag?.let {
+            recordDiagnosis(it)
+            it.readiness?.let { r -> d.readinessNow = r }
+        }
+        val now = System.currentTimeMillis()
+        val report = d.report(now, driveStartDiag, endDiag)
+        db.dao().insertDriveReport(DriveReportEntity(startMs = report.startMs, endMs = report.endMs, text = report.text))
+        _state.update { it.copy(drive = null, driveReport = report.text, diagnosis = endDiag ?: it.diagnosis) }
     }
 
     /** Cancellazione codici: ricontrolla le condizioni, salva codici e freeze frame, poi invia "04". */
