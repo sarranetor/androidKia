@@ -12,6 +12,10 @@ import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.res.painterResource
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -20,9 +24,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -32,7 +38,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
@@ -46,19 +53,23 @@ import java.util.Locale
 
 private enum class Page { HOME, DIAGNOSIS, CONSUMI, SERVER, DEBUG }
 
-private val Red = Color(0xFFE53935)
-private val Yellow = Color(0xFFFFB300)
-private val Green = Color(0xFF66BB6A)
 
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // barre di sistema trasparenti con icone chiare (l'app è sempre scura); gli spazi li gestisce safeDrawingPadding()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         super.onCreate(savedInstanceState)
         ObdEngine.attach(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) // schermo sempre acceso
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier.fillMaxSize()) { Screen() }
+            EhiTheme {
+                Surface(Modifier.fillMaxSize(), color = Palette.Background) {
+                    Box(Modifier.fillMaxSize().safeDrawingPadding()) { Screen() }
+                }
             }
         }
     }
@@ -144,9 +155,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ---- connessione
+    // ---- connessione (schermata iniziale)
 
     @OptIn(ExperimentalFoundationApi::class)
+    @SuppressLint("MissingPermission")
     @Composable
     private fun ConnectPage(
         ui: UiState, devices: List<BluetoothDevice>,
@@ -155,60 +167,88 @@ class MainActivity : ComponentActivity() {
         var mode by rememberSaveable { mutableStateOf(Mode.SIMULATOR) }
         var address by rememberSaveable { mutableStateOf<String?>(null) }
         var replayName by rememberSaveable { mutableStateOf<String?>(null) }
+        val canConnect = when (mode) {
+            Mode.REAL -> address != null
+            Mode.REPLAY -> replayName != null
+            Mode.SIMULATOR -> true
+        }
 
         Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            // Pressione lunga sul titolo = schermata debug nascosta
-            Text(
-                "Ehi macchina",
-                fontSize = 24.sp,
-                modifier = Modifier.combinedClickable(onClick = {}, onLongClick = onDebug),
-            )
-            Mode.entries.forEach { m ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = mode == m, onClick = { mode = m })
-                    Text(m.label)
+            // intestazione; pressione lunga sul titolo = schermata debug nascosta
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp).combinedClickable(onClick = {}, onLongClick = onDebug),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(Palette.Accent.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(painterResource(R.drawable.ic_stat_gauge), contentDescription = null, tint = Palette.Accent, modifier = Modifier.size(30.dp)) }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Ehi macchina", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                    Text("Kia Cee'd 1.6 · diagnostica OBD", style = MaterialTheme.typography.bodySmall, color = Palette.Muted)
                 }
             }
-            if (mode == Mode.REAL) {
-                @SuppressLint("MissingPermission")
-                val names = devices.map { "${it.name} (${it.address})" }
-                Picker(
-                    label = "Adattatore (già associato in Impostazioni Bluetooth)",
-                    options = names,
-                    selected = devices.indexOfFirst { it.address == address }.takeIf { it >= 0 }?.let { names[it] },
-                    onSelect = { address = devices[it].address },
-                )
+            StatusPill(ui.status, if (ui.status.startsWith("Errore")) Palette.Crit else Palette.Muted)
+
+            SectionCard("Sorgente dati") {
+                ChoiceCard(mode == Mode.REAL, "Auto", "Adattatore ELM327 via Bluetooth", painterResource(R.drawable.ic_stat_gauge), { mode = Mode.REAL })
+                ChoiceCard(mode == Mode.SIMULATOR, "Simulatore", "Dati finti per provare l'app a casa", rememberVectorPainter(Icons.Filled.PlayArrow), { mode = Mode.SIMULATOR })
+                ChoiceCard(mode == Mode.REPLAY, "Riproduci log", "Rivedi una sessione registrata", rememberVectorPainter(Icons.Filled.Refresh), { mode = Mode.REPLAY })
+                if (mode == Mode.REAL) {
+                    val names = devices.map { "${it.name} (${it.address})" }
+                    Picker(
+                        label = "Adattatore associato",
+                        options = names,
+                        selected = devices.indexOfFirst { it.address == address }.takeIf { it >= 0 }?.let { names[it] },
+                        onSelect = { address = devices[it].address },
+                    )
+                    if (devices.isEmpty()) Hint("Nessun dispositivo associato: associa l'ELM327 in Impostazioni → Bluetooth (PIN 1234 o 0000).")
+                }
+                if (mode == Mode.REPLAY) {
+                    val files = remember { ObdEngine.logFiles() }
+                    Picker(
+                        label = "Log da riprodurre",
+                        options = files.map { it.name },
+                        selected = replayName,
+                        onSelect = { replayName = files[it].name },
+                    )
+                }
             }
-            if (mode == Mode.REPLAY) {
-                val files = remember { ObdEngine.logFiles() }
-                Picker(
-                    label = "Log da riprodurre",
-                    options = files.map { it.name },
-                    selected = replayName,
-                    onSelect = { replayName = files[it].name },
-                )
+
+            Button(
+                onClick = { connect(mode, address, replayName?.let { n -> ObdEngine.logFiles().firstOrNull { it.name == n } }) },
+                enabled = canConnect,
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Connetti", style = MaterialTheme.typography.titleMedium)
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onDiagnosis) { Text("Codici") }
-                OutlinedButton(onClick = onConsumi) { Text("Consumi") }
-                OutlinedButton(onClick = onServer) { Text("Server") }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                NavTile("Codici", Icons.Filled.Warning, onDiagnosis, Modifier.weight(1f))
+                NavTile("Consumi", Icons.Filled.DateRange, onConsumi, Modifier.weight(1f))
+                NavTile("Server", Icons.Filled.Settings, onServer, Modifier.weight(1f))
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    connect(mode, address, replayName?.let { n -> ObdEngine.logFiles().firstOrNull { it.name == n } })
-                }) { Text("Connetti") }
-                OutlinedButton(onClick = { ObdEngine.latestLogFile()?.let { shareLog(it) } }) { Text("Condividi log") }
+            TextButton(onClick = { ObdEngine.latestLogFile()?.let { shareLog(it) } }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Condividi l'ultimo log")
             }
-            Text(ui.status, fontSize = 16.sp)
         }
     }
 
     // ---- cruscotto
 
-    private class Tile(val label: String, val value: String, val unit: String, val color: Color)
+    private class Tile(
+        val label: String, val value: String, val unit: String,
+        val color: Color = Palette.Text, val level: Float? = null, val levelColor: Color = Palette.Accent,
+    )
 
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
@@ -216,87 +256,81 @@ class MainActivity : ComponentActivity() {
         val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
         val v = ui.values
         val alerts = Alerts.evaluate(v, ui.battery, ui.diagnosis)
-
-        fun levelColor(l: Level?) = when (l) {
-            Level.CRIT -> Red
-            Level.WARN -> Yellow
-            null -> Color.White
-        }
         fun num(pid: Int, decimals: Int = 0) = v[pid]?.let { "%.${decimals}f".format(it) } ?: "—"
 
+        val coolantLevel = Alerts.coolantLevel(v[0x05])
+        val batteryLevel = Alerts.batteryLevel(ui.battery, v[0x0C])
         // consumo istantaneo: L/100 km in marcia, L/h da fermi
         val l100 = Consumption.litersPer100Km(ui.litersPerHour, v[0x0D])
         val instant = when {
-            l100 != null -> Tile("CONSUMO", "%.1f".format(l100), "L/100km", Color.White)
-            ui.litersPerHour != null -> Tile("CONSUMO", "%.1f".format(ui.litersPerHour), "L/h", Color.White)
-            else -> Tile("CONSUMO", "—", "L/100km", Color.White)
+            l100 != null -> Tile("Consumo", "%.1f".format(l100), "L/100km")
+            ui.litersPerHour != null -> Tile("Consumo", "%.1f".format(ui.litersPerHour), "L/h")
+            else -> Tile("Consumo", "—", "L/100km")
         }
         val trip = ui.trip
-        val tripAvg = Tile(
-            "MEDIA VIAGGIO",
-            trip?.avgLitersPer100Km?.let { "%.1f".format(it) } ?: "—",
-            if (trip != null) "L/100km · %.1f km".format(trip.km) else "L/100km",
-            Color.White,
-        )
-
         val tiles = listOf(
-            Tile("GIRI", num(0x0C), "rpm", Color.White),
-            Tile("VELOCITÀ", num(0x0D), "km/h", Color.White),
-            Tile("LIQUIDO", num(0x05), "°C", levelColor(Alerts.coolantLevel(v[0x05]))),
-            Tile("BATTERIA", ui.battery?.let { "%.1f".format(it) } ?: "—", "V",
-                levelColor(Alerts.batteryLevel(ui.battery, v[0x0C]))),
+            Tile("Giri", num(0x0C), "rpm", level = v[0x0C]?.let { (it / 6500).toFloat() }),
+            Tile("Velocità", num(0x0D), "km/h", level = v[0x0D]?.let { (it / 180).toFloat() }),
+            Tile(
+                "Liquido", num(0x05), "°C", levelColor(coolantLevel),
+                level = v[0x05]?.let { ((it - 40) / 80).toFloat() }, levelColor = levelColor(coolantLevel, Palette.Ok),
+            ),
+            Tile("Batteria", ui.battery?.let { "%.1f".format(it) } ?: "—", "V", levelColor(batteryLevel)),
             instant,
-            tripAvg,
-            Tile("CARICO", num(0x04), "%", Color.White),
-            Tile("ARIA ASPIRATA", num(0x0F), "°C", Color.White),
-            Tile("MAP", num(0x0B), "kPa", Color.White),
-            Tile("FARFALLA", num(0x11), "%", Color.White),
+            Tile("Media viaggio", trip?.avgLitersPer100Km?.let { "%.1f".format(it) } ?: "—",
+                if (trip != null) "L/100 · %.1f km".format(trip.km) else "L/100km"),
+            Tile("Carico", num(0x04), "%", level = v[0x04]?.let { (it / 100).toFloat() }),
+            Tile("Aria aspirata", num(0x0F), "°C"),
+            Tile("MAP", num(0x0B), "kPa"),
+            Tile("Farfalla", num(0x11), "%", level = v[0x11]?.let { (it / 100).toFloat() }),
         )
-        val valueSp = if (landscape) 40.sp else 52.sp
+        val valueSp = if (landscape) 36.sp else 46.sp
+        val statusColor = when {
+            ui.status.startsWith("Lettura") -> Palette.Ok
+            ui.status.startsWith("Errore") -> Palette.Crit
+            else -> Palette.Warn
+        }
 
-        Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    ui.status, fontSize = 14.sp, color = Color.Gray, maxLines = 1,
-                    modifier = Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onDebug),
-                )
-                TextButton(onClick = onConsumi) { Text("Consumi") }
-                TextButton(onClick = onDiagnosis) { Text("Codici") }
-                TextButton(onClick = { ObdEngine.stop() }) { Text("Stop") }
+                // pressione lunga sullo stato = debug
+                Row(
+                    Modifier.weight(1f).combinedClickable(onClick = {}, onLongClick = onDebug).padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StatusDot(statusColor)
+                    Spacer(Modifier.width(8.dp))
+                    Text(ui.status, style = MaterialTheme.typography.bodyMedium, color = Palette.Muted, maxLines = 1)
+                }
+                FilledTonalButton(onClick = onConsumi, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Consumi") }
+                Spacer(Modifier.width(6.dp))
+                FilledTonalButton(onClick = onDiagnosis, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Codici") }
+                Spacer(Modifier.width(6.dp))
+                OutlinedButton(
+                    onClick = { ObdEngine.stop() }, contentPadding = PaddingValues(horizontal = 12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Palette.Crit),
+                ) { Text("Stop") }
             }
             ui.drive?.let { dr ->
-                Text(
+                InfoBanner(
                     "Test di guida in corso · ${DriveTestAnalyzer.mmss(dr.elapsedMs)} · ${dr.criteria.count { it.done }}/${dr.criteria.size} condizioni",
-                    fontSize = 14.sp, color = Green, maxLines = 1,
-                    modifier = Modifier.combinedClickable(onClick = onDiagnosis),
+                    onClick = onDiagnosis,
                 )
             }
             alerts.forEach {
-                Text(
-                    it.text, fontSize = 18.sp, color = Color.Black, textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().background(if (it.level == Level.CRIT) Red else Yellow, RoundedCornerShape(8.dp))
-                        .padding(8.dp),
-                )
+                Banner(it.text, if (it.level == Level.CRIT) Palette.Crit else Palette.Warn, onClick = onDiagnosis)
             }
             // 5 colonne in orizzontale, 2 in verticale
             tiles.chunked(if (landscape) 5 else 2).forEach { row ->
                 Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    row.forEach { TileView(it, valueSp, Modifier.weight(1f).fillMaxHeight()) }
+                    row.forEach {
+                        MetricTile(
+                            it.label, it.value, it.unit, valueSp, Modifier.weight(1f).fillMaxHeight(),
+                            color = it.color, level = it.level, levelColor = it.levelColor,
+                        )
+                    }
                 }
             }
-        }
-    }
-
-    @Composable
-    private fun TileView(t: Tile, valueSp: androidx.compose.ui.unit.TextUnit, modifier: Modifier) {
-        Column(
-            modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(12.dp)).padding(6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Text(t.label, fontSize = 12.sp, color = Color.Gray)
-            Text(t.value, fontSize = valueSp, color = t.color, fontFamily = FontFamily.Monospace, maxLines = 1)
-            Text(t.unit, fontSize = 13.sp, color = Color.Gray, maxLines = 1)
         }
     }
 
@@ -309,90 +343,95 @@ class MainActivity : ComponentActivity() {
         var confirmClear by remember { mutableStateOf(false) }
         val clearBlock = ClearGuard.check(ui.values)
         val hasCodes = d != null && (d.milOn == true || !d.stored.isNullOrEmpty() || !d.pending.isNullOrEmpty())
+        val fmt = SimpleDateFormat("dd/MM/yy HH:mm", Locale.ITALY)
 
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text("Diagnosi centralina", fontSize = 24.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { ObdEngine.requestDiagnosis() }, enabled = ui.running && !ui.diagnosing) {
-                    Text(if (ui.diagnosing) "Lettura…" else "Leggi codici")
+        PageScaffold(
+            title = "Diagnosi",
+            subtitle = d?.let { "Ultima lettura " + SimpleDateFormat("HH:mm:ss", Locale.ITALY).format(Date(it.atMillis)) }
+                ?: if (ui.running) "Lettura in corso…" else "Non connesso",
+            onBack = onBack,
+            actions = {
+                FilledTonalButton(onClick = { ObdEngine.requestDiagnosis() }, enabled = ui.running && !ui.diagnosing) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (ui.diagnosing) "Lettura…" else "Leggi")
                 }
-                OutlinedButton(onClick = onBack) { Text("Indietro") }
-            }
+            },
+        ) {
             ui.notice?.let {
-                Text(it, color = Yellow, modifier = Modifier.fillMaxWidth().background(Color(0xFF2A2A2A), RoundedCornerShape(8.dp)).padding(8.dp))
-                TextButton(onClick = { ObdEngine.dismissNotice() }) { Text("OK") }
+                Banner(it, Palette.Warn, Icons.Filled.Info)
+                TextButton(onClick = { ObdEngine.dismissNotice() }) { Text("OK, ho letto") }
             }
-            // test di guida in alto: è la cosa che si cerca di più e i codici/freeze frame sono lunghi
-            HorizontalDivider()
+            if (!ui.running) InfoBanner("Connettiti all'auto per leggere i codici e avviare il test di guida.")
+
+            // test di guida in alto: è la cosa che si cerca di più
             DriveTestSection(ui)
-            HorizontalDivider()
-            if (!ui.running) Text("Connettiti all'auto per leggere i codici.", color = Color.Gray)
-            if (d == null) {
-                if (ui.running) Text("Lettura in corso…", color = Color.Gray)
-            } else {
-                val time = SimpleDateFormat("HH:mm:ss", Locale.ITALY).format(Date(d.atMillis))
-                Text("Ultima lettura: $time", fontSize = 13.sp, color = Color.Gray)
-                Text(
-                    when (d.milOn) {
-                        true -> "Spia motore (MIL): ACCESA"
-                        false -> "Spia motore (MIL): spenta"
-                        null -> "Spia motore (MIL): non letta"
-                    },
-                    fontSize = 18.sp, color = if (d.milOn == true) Red else Green,
-                )
-                d.reportedCount?.let { Text("Codici dichiarati dalla centralina: $it") }
-                CodeList("Codici memorizzati (modo 03)", d.stored)
-                CodeList("Codici pendenti (modo 07)", d.pending)
+
+            if (d != null) {
+                SectionCard("Spia motore e codici") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val milColor = when (d.milOn) { true -> Palette.Crit; false -> Palette.Ok; null -> Palette.Muted }
+                        StatusDot(milColor, 14.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            when (d.milOn) { true -> "Spia motore ACCESA"; false -> "Spia motore spenta"; null -> "Spia motore non letta" },
+                            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = milColor,
+                        )
+                    }
+                    d.reportedCount?.let { KeyValueRow("Codici dichiarati dalla centralina", "$it") }
+                    CodeList("Memorizzati", d.stored, Palette.Crit)
+                    CodeList("Pendenti (non ancora confermati)", d.pending, Palette.Warn)
+                    Hint("P = motore/cambio · C = telaio · B = carrozzeria · U = rete fra centraline. Le spiegazioni dettagliate te le dà Claude.")
+                }
 
                 d.freezeFrame?.let { ff ->
-                    HorizontalDivider()
-                    Text("Freeze frame — condizioni quando è scattato ${ff.code}", fontSize = 16.sp)
-                    FreezeValues(ff)
+                    SectionCard("Freeze frame · ${ff.code}") {
+                        Hint("Valori registrati dalla centralina nell'istante in cui è scattato il codice.")
+                        FreezeValues(ff)
+                    }
                 }
 
                 if (hasCodes) {
-                    HorizontalDivider()
-                    Text(
-                        "Prima di cancellare: codici e freeze frame vengono salvati nello storico qui sotto. " +
-                            "La cancellazione azzera anche i monitor di prontezza (serve una guida per ricompletarli).",
-                        fontSize = 12.sp, color = Color.Gray,
-                    )
-                    Button(
-                        onClick = { confirmClear = true },
-                        enabled = ui.running && !ui.diagnosing && clearBlock == null,
-                        colors = ButtonDefaults.buttonColors(containerColor = Red),
-                    ) { Text("Cancella codici…") }
-                    if (clearBlock != null && ui.running) Text(clearBlock, fontSize = 13.sp, color = Yellow)
+                    SectionCard("Cancellazione codici") {
+                        Hint(
+                            "Prima di cancellare, codici e freeze frame vengono salvati nello storico. La cancellazione azzera anche " +
+                                "i monitor di prontezza (servirà una guida per ricompletarli). Se il guasto c'è ancora, i codici tornano.",
+                        )
+                        OutlinedButton(
+                            onClick = { confirmClear = true },
+                            enabled = ui.running && !ui.diagnosing && clearBlock == null,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Palette.Crit),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Cancella codici…")
+                        }
+                        if (clearBlock != null && ui.running) Hint(clearBlock, Palette.Warn)
+                    }
                 }
-                Text(
-                    "Il prefisso indica la zona: P = motore/cambio, C = telaio, B = carrozzeria, U = rete di comunicazione.",
-                    fontSize = 12.sp, color = Color.Gray,
-                )
+
+                d.readiness?.let { r -> SectionCard("Monitor di prontezza") { ReadinessList(r) } }
             }
 
-            // ---- monitor di prontezza
-            d?.readiness?.let { r ->
-                HorizontalDivider()
-                Text("Monitor di prontezza", fontSize = 18.sp)
-                ReadinessList(r)
-            }
-
-            HorizontalDivider()
-            Text("Storico codici", fontSize = 18.sp)
-            if (history.isEmpty()) Text("nessun codice registrato finora", color = Color.Gray)
-            history.forEach { h ->
-                val fmt = SimpleDateFormat("dd/MM/yy HH:mm", Locale.ITALY)
-                Column(Modifier.fillMaxWidth().background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)).padding(8.dp)) {
-                    Text(h.code, fontSize = 20.sp, fontFamily = FontFamily.Monospace, color = if (h.clearedMs == null) Red else Color.Gray)
-                    Text(
-                        "${h.kind} · visto la prima volta ${fmt.format(Date(h.firstSeenMs))}, ultima ${fmt.format(Date(h.lastSeenMs))}" +
-                            (h.clearedMs?.let { " · cancellato ${fmt.format(Date(it))}" } ?: ""),
-                        fontSize = 12.sp, color = Color.Gray,
-                    )
-                    h.freeze?.let { text -> FreezeFrame.fromText(text)?.let { FreezeValues(it) } }
+            SectionCard("Storico codici") {
+                if (history.isEmpty()) Hint("Nessun codice registrato finora.")
+                history.forEach { h ->
+                    Column(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Palette.SurfaceHigh).padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CodeBadge(h.code, if (h.clearedMs == null) Palette.Crit else Palette.Muted)
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                if (h.clearedMs == null) h.kind else "cancellato " + fmt.format(Date(h.clearedMs)),
+                                style = MaterialTheme.typography.bodySmall, color = Palette.Muted,
+                            )
+                        }
+                        Hint("Prima volta ${fmt.format(Date(h.firstSeenMs))} · ultima ${fmt.format(Date(h.lastSeenMs))}")
+                        h.freeze?.let { text -> FreezeFrame.fromText(text)?.let { FreezeValues(it) } }
+                    }
                 }
             }
         }
@@ -400,6 +439,7 @@ class MainActivity : ComponentActivity() {
         if (confirmClear) {
             AlertDialog(
                 onDismissRequest = { confirmClear = false },
+                icon = { Icon(Icons.Filled.Warning, contentDescription = null, tint = Palette.Crit) },
                 title = { Text("Cancellare i codici errore?") },
                 text = {
                     Text(
@@ -410,7 +450,7 @@ class MainActivity : ComponentActivity() {
                 },
                 confirmButton = {
                     TextButton(onClick = { confirmClear = false; ObdEngine.requestClearCodes() }) {
-                        Text("Cancella", color = Red)
+                        Text("Cancella", color = Palette.Crit)
                     }
                 },
                 dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Annulla") } },
@@ -421,15 +461,9 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun ReadinessList(r: Readiness) {
         r.monitors.forEach {
-            Text(
-                (if (it.complete) "✓ " else "○ ") + it.name + if (it.complete) "" else " — incompleto",
-                fontSize = 14.sp, color = if (it.complete) Green else Yellow,
-            )
+            CheckRow(it.complete, it.name, if (it.complete) null else "incompleto", pendingColor = Palette.Warn)
         }
-        Text(
-            "Un monitor incompleto = la centralina non ha ancora finito di valutare quel sistema (succede dopo una cancellazione dei codici o con poca guida a caldo).",
-            fontSize = 12.sp, color = Color.Gray,
-        )
+        Hint("Incompleto = la centralina non ha ancora finito di valutare quel sistema (succede dopo una cancellazione dei codici o con poca guida a caldo).")
     }
 
     @Composable
@@ -439,58 +473,99 @@ class MainActivity : ComponentActivity() {
         val fmt = SimpleDateFormat("dd/MM/yy HH:mm", Locale.ITALY)
         val drive = ui.drive
 
-        Text("Test di guida diagnostico", fontSize = 18.sp)
-        if (drive == null) {
-            Text(
-                "Per una diagnosi attendibile serve guidare 15–20 minuti: motore a temperatura, un tratto costante a 50–100 km/h " +
-                    "e un minimo finale. L'app registra tutto in background e crea un rapporto con indizi su sonde, " +
-                    "catalizzatore, miscela, batteria e monitor di prontezza. Non usare il telefono mentre guidi.",
-                fontSize = 13.sp, color = Color.Gray,
-            )
-            Button(onClick = { ObdEngine.startDriveTest() }, enabled = ui.running) { Text("Avvia test di guida") }
-            if (!ui.running) Text("Connettiti all'auto per avviare il test.", fontSize = 13.sp, color = Color.Gray)
-        } else {
-            Text("In corso: ${DriveTestAnalyzer.mmss(drive.elapsedMs)}", fontSize = 22.sp, color = Green)
-            drive.criteria.forEach {
+        SectionCard("Test di guida diagnostico") {
+            if (drive == null) {
                 Text(
-                    (if (it.done) "✓ " else "○ ") + it.label + " — " + it.progress,
-                    fontSize = 14.sp, color = if (it.done) Green else Color.White,
+                    "Guida 15–20 minuti: motore in temperatura, un tratto costante a 50–100 km/h e un minimo finale. " +
+                        "L'app registra in background e crea un rapporto su sonde, catalizzatore, miscela, batteria e monitor.",
+                    style = MaterialTheme.typography.bodyMedium,
                 )
-            }
-            drive.readiness?.let { ReadinessList(it) }
-            Text("Condizioni indicative, non il ciclo ufficiale Kia. Puoi terminare quando vuoi.", fontSize = 12.sp, color = Color.Gray)
-            Button(onClick = { ObdEngine.stopDriveTest() }) { Text("Termina e crea rapporto") }
-        }
-
-        ui.driveReport?.let { text ->
-            Text("Rapporto", fontSize = 16.sp)
-            Text(text, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { shareText(text, "Condividi rapporto") }) { Text("Condividi rapporto") }
-                OutlinedButton(onClick = { ObdEngine.dismissDriveReport() }) { Text("Chiudi") }
-            }
-        }
-
-        if (reports.isNotEmpty()) {
-            Text("Rapporti precedenti", fontSize = 16.sp)
-            reports.forEach { r ->
-                Column(
-                    Modifier.fillMaxWidth().background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)).padding(8.dp),
+                Hint("Non usare il telefono mentre guidi.", Palette.Warn)
+                Button(
+                    onClick = { ObdEngine.startDriveTest() }, enabled = ui.running,
+                    modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "${fmt.format(Date(r.startMs))} · ${DriveTestAnalyzer.mmss(r.endMs - r.startMs)}",
-                            fontSize = 14.sp, modifier = Modifier.weight(1f),
-                        )
-                        TextButton(onClick = { openId = if (openId == r.id) null else r.id }) {
-                            Text(if (openId == r.id) "Nascondi" else "Apri")
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Avvia test di guida")
+                }
+            } else {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(DriveTestAnalyzer.mmss(drive.elapsedMs), style = Numbers, fontSize = 40.sp, color = Palette.Accent)
+                    Spacer(Modifier.width(8.dp))
+                    Text("/ 15:00 · ${drive.criteria.count { it.done }} di ${drive.criteria.size} condizioni",
+                        style = MaterialTheme.typography.bodyMedium, color = Palette.Muted, modifier = Modifier.padding(bottom = 8.dp))
+                }
+                LevelBar((drive.elapsedMs / 900_000f), Palette.Accent)
+                drive.criteria.forEach { CheckRow(it.done, it.label, it.progress) }
+                drive.readiness?.let {
+                    HorizontalDivider(color = Palette.Outline)
+                    Text("Monitor di prontezza", style = MaterialTheme.typography.labelLarge, color = Palette.Muted)
+                    ReadinessList(it)
+                }
+                Hint("Condizioni indicative, non il ciclo ufficiale Kia. Puoi terminare quando vuoi.")
+                Button(
+                    onClick = { ObdEngine.stopDriveTest() },
+                    modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
+                ) {
+                    Icon(Icons.Filled.Done, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Termina e crea rapporto")
+                }
+            }
+
+            ui.driveReport?.let { text ->
+                HorizontalDivider(color = Palette.Outline)
+                Text("Rapporto", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                ReportText(text)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { shareText(text, "Condividi rapporto") }) {
+                        Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Condividi")
+                    }
+                    OutlinedButton(onClick = { ObdEngine.dismissDriveReport() }) { Text("Chiudi") }
+                }
+            }
+
+            if (reports.isNotEmpty()) {
+                HorizontalDivider(color = Palette.Outline)
+                Text("Rapporti precedenti", style = MaterialTheme.typography.labelLarge, color = Palette.Muted)
+                reports.forEach { r ->
+                    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Palette.SurfaceHigh).padding(horizontal = 12.dp, vertical = 4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${fmt.format(Date(r.startMs))} · ${DriveTestAnalyzer.mmss(r.endMs - r.startMs)}",
+                                style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = { openId = if (openId == r.id) null else r.id }) {
+                                Text(if (openId == r.id) "Nascondi" else "Apri")
+                            }
+                        }
+                        if (openId == r.id) {
+                            ReportText(r.text)
+                            TextButton(onClick = { shareText(r.text, "Condividi rapporto") }) { Text("Condividi") }
                         }
                     }
-                    if (openId == r.id) {
-                        Text(r.text, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-                        TextButton(onClick = { shareText(r.text, "Condividi rapporto") }) { Text("Condividi") }
-                    }
                 }
+            }
+        }
+    }
+
+    /** Testo del rapporto: le righe [ATTENZIONE]/[info]/[ok] colorate. */
+    @Composable
+    private fun ReportText(text: String) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            text.lines().forEach { line ->
+                val t = line.trim()
+                val color = when {
+                    t.startsWith("[ATTENZIONE]") -> Palette.Warn
+                    t.startsWith("[ok") -> Palette.Ok
+                    t.startsWith("[info") -> Palette.Accent
+                    t.isNotEmpty() && t == t.uppercase() && t.any { it.isLetter() } -> Palette.Muted
+                    else -> Palette.Text
+                }
+                Text(line, style = MaterialTheme.typography.bodySmall, color = color)
             }
         }
     }
@@ -499,20 +574,19 @@ class MainActivity : ComponentActivity() {
     private fun FreezeValues(ff: FreezeFrame) {
         ff.values.forEach { (id, value) ->
             val pid = Pids.get(id)
-            Text(
-                "${pid?.name ?: "PID %02X".format(id)}: %.1f %s".format(value, pid?.unit ?: ""),
-                fontFamily = FontFamily.Monospace, fontSize = 13.sp,
-            )
+            // decimali solo dove servono (tensioni sonde, lambda)
+            val decimals = when (pid?.unit) { "V", "λ" -> 2; "%", "°" -> 1; else -> 0 }
+            KeyValueRow(pid?.name ?: "PID %02X".format(id), "%.${decimals}f %s".format(value, pid?.unit ?: ""))
         }
     }
 
     @Composable
-    private fun CodeList(title: String, codes: List<String>?) {
-        Text(title, fontSize = 16.sp)
+    private fun CodeList(title: String, codes: List<String>?, color: Color) {
+        Text(title, style = MaterialTheme.typography.labelLarge, color = Palette.Muted)
         when {
-            codes == null -> Text("non letti (nessuna risposta valida)", color = Yellow)
-            codes.isEmpty() -> Text("nessuno", color = Green)
-            else -> codes.forEach { Text(it, fontSize = 22.sp, fontFamily = FontFamily.Monospace, color = Red) }
+            codes == null -> Hint("Non letti (nessuna risposta valida).", Palette.Warn)
+            codes.isEmpty() -> CheckRow(true, "Nessuno")
+            else -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { codes.forEach { CodeBadge(it, color) } }
         }
     }
 
@@ -532,68 +606,79 @@ class MainActivity : ComponentActivity() {
         val fmt = SimpleDateFormat("dd/MM/yy HH:mm:ss", Locale.ITALY)
         val draft = SyncConfig(url, token, enabled, sendSim)
 
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Server", fontSize = 24.sp, modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = onBack) { Text("Indietro") }
-            }
-            Text(
-                "I dati dell'auto (valori ogni 15 s mentre guidi, viaggi, codici errore, rapporti) vengono inviati al tuo server " +
-                    "Cloudflare, da cui Claude potrà leggerli. Se manca internet restano in coda e partono dopo.",
-                fontSize = 13.sp, color = Color.Gray,
-            )
-            OutlinedTextField(
-                value = url, onValueChange = { url = it }, label = { Text("Indirizzo (https://…workers.dev)") },
-                singleLine = true, modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            )
-            OutlinedTextField(
-                value = token, onValueChange = { token = it }, label = { Text("Token segreto") },
-                singleLine = true, modifier = Modifier.fillMaxWidth(),
-                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = enabled, onCheckedChange = { enabled = it })
-                Text("  Invio attivo")
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = sendSim, onCheckedChange = { sendSim = it })
-                Text("  Invia anche i dati del simulatore (solo per prove)", fontSize = 14.sp)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    ObdEngine.settings.save(draft)
-                    ObdEngine.sync.kick()
-                    message = "Salvato"
-                }) { Text("Salva") }
-                OutlinedButton(onClick = {
-                    message = "Prova in corso…"
-                    scope.launch { message = ObdEngine.sync.ping(draft) }
-                }) { Text("Invia prova") }
-            }
-            message?.let { Text(it, color = Yellow) }
+        val (stateText, stateColor) = when {
+            !saved.ready -> "Invio non attivo" to Palette.Muted
+            sync.authRejected -> "Token rifiutato" to Palette.Crit
+            sync.lastError != null -> "Problemi di invio" to Palette.Warn
+            sync.lastOkMs != null -> "Collegato" to Palette.Ok
+            else -> "In attesa del primo invio" to Palette.Accent
+        }
 
-            HorizontalDivider()
-            Text("Stato invio", fontSize = 18.sp)
-            Text("Eventi in coda: $pending")
-            Text("Ultimo invio riuscito: " + (sync.lastOkMs?.let { fmt.format(Date(it)) } ?: "mai"))
-            sync.lastError?.let { Text("Ultimo errore: $it", color = Red) }
-            if (sync.authRejected) Text("Il token è stato rifiutato: correggilo e premi Salva.", color = Red)
-            if (!saved.ready) Text("Invio non attivo: inserisci indirizzo e token, attiva l'interruttore e premi Salva.", color = Color.Gray, fontSize = 13.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { ObdEngine.sync.kick() }, enabled = saved.ready && pending > 0) { Text("Invia ora") }
-                OutlinedButton(
-                    onClick = { scope.launch { message = "Storico messo in coda: ${ObdEngine.queueHistory()} eventi" } },
-                    enabled = saved.ready,
-                ) { Text("Invia storico") }
+        PageScaffold("Server", subtitle = "Invio dati a Claude", onBack = onBack) {
+            SectionCard("Stato") {
+                StatusPill(stateText, stateColor)
+                KeyValueRow("Eventi in coda", "$pending")
+                KeyValueRow("Ultimo invio riuscito", sync.lastOkMs?.let { fmt.format(Date(it)) } ?: "mai")
+                sync.lastError?.let { Hint("Ultimo errore: $it", Palette.Crit) }
+                if (sync.authRejected) Hint("Il token è stato rifiutato: correggilo e premi Salva.", Palette.Crit)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(onClick = { ObdEngine.sync.kick() }, enabled = saved.ready && pending > 0) {
+                        Icon(Icons.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Invia ora")
+                    }
+                    OutlinedButton(
+                        onClick = { scope.launch { message = "Storico messo in coda: ${ObdEngine.queueHistory()} eventi" } },
+                        enabled = saved.ready,
+                    ) { Text("Invia storico") }
+                }
+                Hint(
+                    "«Invia storico» manda viaggi, codici e rapporti già presenti nell'app, anche quelli nati col simulatore: " +
+                        "usalo solo quando nell'app ci sono dati veri dell'auto. Si può ripetere senza creare doppioni.",
+                )
             }
-            Text(
-                "«Invia storico» manda al server viaggi, codici e rapporti già presenti nell'app, anche quelli nati col simulatore: usalo solo quando nell'app ci sono dati veri dell'auto. Si può ripetere senza creare doppioni.",
-                fontSize = 12.sp, color = Color.Gray,
-            )
+
+            SectionCard("Configurazione") {
+                Hint(
+                    "Valori ogni 15 s mentre guidi, viaggi, codici errore e rapporti vanno al tuo server Cloudflare, " +
+                        "da cui Claude li legge. Senza internet restano in coda e partono dopo.",
+                )
+                OutlinedTextField(
+                    value = url, onValueChange = { url = it }, label = { Text("Indirizzo (https://…workers.dev)") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                )
+                OutlinedTextField(
+                    value = token, onValueChange = { token = it }, label = { Text("Token segreto") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                )
+                SwitchRow("Invio attivo", null, enabled) { enabled = it }
+                SwitchRow("Invia anche i dati del simulatore", "Solo per prove: di norma i dati finti restano sul telefono.", sendSim) { sendSim = it }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        ObdEngine.settings.save(draft)
+                        ObdEngine.sync.kick()
+                        message = "Salvato"
+                    }) { Text("Salva") }
+                    OutlinedButton(onClick = {
+                        message = "Prova in corso…"
+                        scope.launch { message = ObdEngine.sync.ping(draft) }
+                    }) { Text("Invia prova") }
+                }
+                message?.let { Hint(it, if (it.startsWith("Collegamento riuscito") || it == "Salvato") Palette.Ok else Palette.Warn) }
+            }
+        }
+    }
+
+    @Composable
+    private fun SwitchRow(title: String, description: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge)
+                if (description != null) Hint(description)
+            }
+            Switch(checked = checked, onCheckedChange = onChange)
         }
     }
 
@@ -607,62 +692,87 @@ class MainActivity : ComponentActivity() {
         var km by rememberSaveable { mutableStateOf("") }
         val fmt = SimpleDateFormat("dd/MM/yy HH:mm", Locale.ITALY)
 
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Consumi e viaggi", fontSize = 24.sp, modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = onBack) { Text("Indietro") }
+        // riepilogo degli ultimi 30 giorni (solo viaggi non trascurabili)
+        val since = System.currentTimeMillis() - 30L * 24 * 3600 * 1000
+        val recent = trips.filter { it.startMs >= since && it.km >= 0.5 }
+        val totalKm = recent.sumOf { it.km }
+        val totalL = recent.sumOf { it.fuelL } * ui.calibration
+
+        PageScaffold("Consumi", subtitle = "Viaggi e rifornimenti", onBack = onBack) {
+            SectionCard("Ultimi 30 giorni") {
+                Row {
+                    SummaryNumber(if (totalKm >= 1) "%.1f".format(totalL / totalKm * 100) else "—", "L/100km medi", Modifier.weight(1f))
+                    SummaryNumber("%.0f".format(totalKm), "km", Modifier.weight(1f))
+                    SummaryNumber("${recent.size}", "viaggi", Modifier.weight(1f))
+                }
+                KeyValueRow("Fattore di taratura", "%.2f".format(ui.calibration))
+                Hint("1,00 = stima non corretta. Si aggiorna da solo a ogni rifornimento inserito.")
             }
 
-            Text("Rifornimento", fontSize = 18.sp)
-            Text(
-                "Inserisci i litri messi al pieno e i km fatti dal pieno precedente. " +
-                    "L'app confronta con la sua stima e corregge i consumi.",
-                fontSize = 12.sp, color = Color.Gray,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = liters, onValueChange = { liters = it }, label = { Text("Litri") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f),
-                )
-                OutlinedTextField(
-                    value = km, onValueChange = { km = it }, label = { Text("Km dal pieno prec.") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f),
-                )
-            }
-            val l = liters.replace(',', '.').toDoubleOrNull()
-            val k = km.replace(',', '.').toDoubleOrNull()
-            Button(
-                onClick = { ObdEngine.addRefuel(l!!, k!!); liters = ""; km = "" },
-                enabled = l != null && k != null && l > 0 && k > 0,
-            ) { Text("Aggiungi rifornimento") }
-            Text("Fattore di taratura: %.2f (1.00 = stima non corretta)".format(ui.calibration), fontSize = 13.sp)
-            refuels.forEach { r ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "${fmt.format(Date(r.dateMs))} · %.1f L · %.0f km · %.1f L/100km".format(r.liters, r.km, r.liters / r.km * 100),
-                        fontSize = 13.sp, modifier = Modifier.weight(1f),
+            SectionCard("Nuovo rifornimento") {
+                Hint("Litri messi al pieno e km fatti dal pieno precedente.")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = liters, onValueChange = { liters = it }, label = { Text("Litri") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = { ObdEngine.deleteRefuel(r.id) }) { Text("Elimina") }
+                    OutlinedTextField(
+                        value = km, onValueChange = { km = it }, label = { Text("Km") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f),
+                    )
+                }
+                val l = liters.replace(',', '.').toDoubleOrNull()
+                val k = km.replace(',', '.').toDoubleOrNull()
+                Button(
+                    onClick = { ObdEngine.addRefuel(l!!, k!!); liters = ""; km = "" },
+                    enabled = l != null && k != null && l > 0 && k > 0,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Aggiungi rifornimento")
+                }
+                refuels.forEach { r ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(fmt.format(Date(r.dateMs)), style = MaterialTheme.typography.bodyMedium)
+                            Hint("%.1f L · %.0f km · %.1f L/100km".format(r.liters, r.km, r.liters / r.km * 100))
+                        }
+                        IconButton(onClick = { ObdEngine.deleteRefuel(r.id) }) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Elimina", tint = Palette.Muted)
+                        }
+                    }
                 }
             }
 
-            HorizontalDivider()
-            Text("Viaggi", fontSize = 18.sp)
-            if (trips.isEmpty()) Text("nessun viaggio registrato", color = Color.Gray)
-            trips.forEach { t ->
-                val minutes = (t.endMs - t.startMs) / 60_000
-                val avg = if (t.km >= 0.3) "%.1f L/100km".format(t.fuelL * ui.calibration / t.km * 100) else "—"
-                Column(Modifier.fillMaxWidth().background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)).padding(8.dp)) {
-                    Text(fmt.format(Date(t.startMs)), fontSize = 14.sp)
-                    Text(
-                        "%.1f km · %d min · %s · max %.0f km/h".format(t.km, minutes, avg, t.maxSpeed),
-                        fontFamily = FontFamily.Monospace, fontSize = 13.sp,
-                    )
+            SectionCard("Viaggi") {
+                if (trips.isEmpty()) Hint("Nessun viaggio registrato.")
+                trips.forEach { t ->
+                    val minutes = (t.endMs - t.startMs) / 60_000
+                    val avg = if (t.km >= 0.3) "%.1f".format(t.fuelL * ui.calibration / t.km * 100) else "—"
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Palette.SurfaceHigh).padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(fmt.format(Date(t.startMs)), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Hint("%.1f km · %d min · max %.0f km/h".format(t.km, minutes, t.maxSpeed))
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(avg, style = Numbers, fontSize = 22.sp, color = Palette.Accent)
+                            Hint("L/100km")
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    @Composable
+    private fun SummaryNumber(value: String, label: String, modifier: Modifier = Modifier) {
+        Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(value, style = Numbers, fontSize = 28.sp, color = Palette.Text)
+            Hint(label)
         }
     }
 
@@ -672,35 +782,38 @@ class MainActivity : ComponentActivity() {
     private fun DebugPage(ui: UiState, onBack: () -> Unit) {
         val debugLines by ObdEngine.debugLines.collectAsState()
         var command by remember { mutableStateOf("") }
-        Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+        PageScaffold(
+            "Debug", subtitle = ui.status, onBack = onBack,
+            actions = {
+                IconButton(onClick = { ObdEngine.latestLogFile()?.let { shareLog(it) } }) {
+                    Icon(Icons.Filled.Share, contentDescription = "Condividi log")
+                }
+            },
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("DEBUG", fontSize = 20.sp, modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = { ObdEngine.latestLogFile()?.let { shareLog(it) } }) { Text("Condividi log") }
-                OutlinedButton(onClick = onBack) { Text("Indietro") }
+            SectionCard("Adattatore") {
+                Text(ui.info.ifEmpty { "—" }, style = MaterialTheme.typography.bodyMedium)
+                if (ui.supported.isNotEmpty()) {
+                    Hint("PID supportati (* = non decodificato):")
+                    Text(
+                        ui.supported.joinToString(" ") { "%02X".format(it) + if (Pids.get(it) == null) "*" else "" },
+                        fontFamily = FontFamily.Monospace, fontSize = 13.sp,
+                    )
+                }
             }
-            Text(ui.status, fontSize = 14.sp)
-            if (ui.info.isNotEmpty()) Text(ui.info, fontSize = 13.sp)
-            if (ui.supported.isNotEmpty()) {
-                Text("PID supportati (* = non decodificato):", fontSize = 13.sp)
-                Text(
-                    ui.supported.joinToString(" ") { "%02X".format(it) + if (Pids.get(it) == null) "*" else "" },
-                    fontFamily = FontFamily.Monospace, fontSize = 13.sp,
-                )
+            SectionCard("Console (sola lettura)") {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = command, onValueChange = { command = it },
+                        label = { Text("Comando (es. 0902, ATDP)") }, singleLine = true,
+                        enabled = ui.running, modifier = Modifier.weight(1f),
+                    )
+                    Button(onClick = { ObdEngine.sendManual(command); command = "" }, enabled = ui.running) { Text("Invia") }
+                }
+                ui.console.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 12.sp) }
             }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = command, onValueChange = { command = it },
-                    label = { Text("Comando (es. 0902, ATDP)") }, singleLine = true,
-                    enabled = ui.running, modifier = Modifier.weight(1f),
-                )
-                Button(onClick = { ObdEngine.sendManual(command); command = "" }, enabled = ui.running) { Text("Invia") }
+            SectionCard("Ultimi scambi") {
+                debugLines.takeLast(40).forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = Palette.Muted) }
             }
-            ui.console.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 12.sp) }
-            HorizontalDivider()
-            debugLines.takeLast(40).forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
         }
     }
 

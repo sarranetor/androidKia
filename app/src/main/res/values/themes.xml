@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Ehi" parent="android:Theme.Material.NoActionBar" />
+    <!-- Sfondo scuro già all'avvio, così non lampeggia il bianco prima di Compose -->
+    <style name="Theme.Ehi" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ic_launcher_background</item>
+    </style>
 </resources>

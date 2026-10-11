@@ -80,7 +80,7 @@ class ObdService : Service() {
             this, 1, Intent(this, ObdService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setSmallIcon(R.drawable.ic_stat_gauge)
             .setContentTitle("Ehi macchina")
             .setContentText(status)
             .setContentIntent(open)

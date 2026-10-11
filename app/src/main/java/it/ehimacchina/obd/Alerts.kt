@@ -41,7 +41,11 @@ object Alerts {
         if (diagnosis != null) {
             val n = diagnosis.stored?.size ?: 0
             if (diagnosis.milOn == true || n > 0) {
-                val text = if (n > 0) "$n codici errore memorizzati — apri Diagnosi" else "Spia motore accesa — apri Diagnosi"
+                val text = when {
+                    n == 1 -> "1 codice errore memorizzato"
+                    n > 1 -> "$n codici errore memorizzati"
+                    else -> "Spia motore accesa"
+                }
                 out += Alert(Level.WARN, text)
             }
         }

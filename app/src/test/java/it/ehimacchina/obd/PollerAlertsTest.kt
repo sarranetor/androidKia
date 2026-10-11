@@ -74,7 +74,7 @@ class PollerAlertsTest {
         val d = Diagnosis(true, 1, listOf("P0133"), emptyList(), 0)
         val alerts = Alerts.evaluate(emptyMap(), null, d)
         assertEquals(1, alerts.size)
-        assertTrue(alerts[0].text.contains("1 codici"))
+        assertTrue(alerts[0].text.contains("1 codice errore"))
         assertTrue(Alerts.evaluate(emptyMap(), null, Diagnosis(false, 0, emptyList(), emptyList(), 0)).isEmpty())
     }
 }

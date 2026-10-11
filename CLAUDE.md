@@ -27,6 +27,7 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 ## Struttura (`app/src/main/java/it/ehimacchina/obd/`)
 - `Transport.kt` interfaccia canale; `BluetoothTransport` (SPP, fallback canale 1 per cloni), `SimulatedTransport`, `ReplayTransport`, `LoggingTransport` (in `SessionLog.kt`).
 - `Elm327.kt` protocollo (senza dipendenze Android → testabile). `Pid.kt` tabella PID e decodifica.
+- `Ui.kt`: tema (palette scura `Palette`, accento ciano, stati Ok/Warn/Crit) e componenti condivisi (`PageScaffold`, `SectionCard`, `MetricTile`, `Banner`, `CheckRow`, `ChoiceCard`, `NavTile`, `CodeBadge`…). Icona app adattiva `ic_launcher_foreground` (contagiri) e `ic_stat_gauge` per la notifica. Edge-to-edge con `safeDrawingPadding()` (targetSdk 35).
 - `DriveTest.kt`, `Readiness.kt`, `Events.kt` (JSON verso il server), `Sync.kt` (impostazioni, rete, coda, `SyncManager`).
 - `server/`: `src/index.ts` (router), `ingest.ts` (validazione e SQL, funzioni pure), `auth.ts`; `migrations/0001_init.sql`; `test/`; `scripts/smoke.ts`.
 - `Db.kt` (Room, versione 2), `Consumption.kt` (stima consumi, `Calibration`, `ClearGuard`), `TripTracker.kt`.
@@ -96,3 +97,7 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - Un nuovo `wrangler deploy` impiega alcuni secondi a propagarsi: possibili 404 transitori.
 - Libreria OAuth: riusare un codice di autorizzazione revoca i token emessi con quel codice (comportamento voluto).
 - `@modelcontextprotocol/sdk` è solo devDependency (client usato nel test e2e); `npm audit` segnala una vulnerabilità del suo *client* OAuth, che non usiamo in produzione.
+
+### Design (11/10/2026)
+- Restyling completo della UI senza cambiare logica: verificato con screenshot sul telefono (verticale e orizzontale) di home, cruscotto, diagnosi, consumi, server. Screenshot: `adb exec-out screencap -p` (serve il telefono sbloccato; `adb shell svc power stayon usb` lo tiene acceso).
+- Server ripulito dai dati del simulatore e interruttore «Invia anche i dati del simulatore» spento (11/10/2026). Il DB locale dell'app contiene ancora viaggi/codice P0133 del simulatore: non usare «Invia storico» finché non ci sono dati veri.
