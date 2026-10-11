@@ -66,10 +66,13 @@ export function evaluateHealth(input: {
   // --- batteria / alternatore (solo a motore acceso)
   const volts = running.map((s) => s.battery).filter((v): v is number => v !== null);
   if (volts.length >= 3) {
+    // percentili invece di minimo/massimo assoluti: un campione preso durante l'avviamento non è un guasto
+    const sorted = [...volts].sort((a, b) => a - b);
+    const pct = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))];
     const avg = mean(volts);
-    const min = Math.min(...volts);
-    const maxV = Math.max(...volts);
-    const dettaglio = `media ${round(avg, 1)} V, minima ${round(min, 1)} V, massima ${round(maxV, 1)} V`;
+    const min = pct(0.05);
+    const maxV = pct(0.95);
+    const dettaglio = `media ${round(avg, 1)} V, minima tipica ${round(min, 1)} V, massima tipica ${round(maxV, 1)} V`;
     if (min < SOGLIE.batteriaCritica || maxV > SOGLIE.batteriaAltaCritica) {
       problemi.push({ livello: "critico", area: "batteria / alternatore", messaggio: `Tensione a motore acceso fuori limite (${dettaglio}).` });
     } else if (avg < SOGLIE.batteriaBassa) {
@@ -87,7 +90,23 @@ export function evaluateHealth(input: {
     group.map((s) => parseValues(s.values_json)).filter((v) => typeof v["06"] === "number" && typeof v["07"] === "number");
   const idleWarm = warm.filter((s) => (s.speed ?? 1) === 0);
   const moving = warm.filter((s) => (s.speed ?? 0) > 0);
+  // --- al minimo la sonda a monte dovrebbe oscillare; se resta sempre sul ricco la miscela è ricca
+  let richIdle = false;
+  const o2Idle = idleWarm.map((s) => parseValues(s.values_json)["14"]).filter((v): v is number => typeof v === "number");
+  if (o2Idle.length >= 5) {
+    const richShare = o2Idle.filter((v) => v > 0.7).length / o2Idle.length;
+    if (richShare >= 0.9) {
+      richIdle = true;
+      problemi.push({
+        livello: "attenzione",
+        area: "sonda lambda / miscela",
+        messaggio: `Al minimo la sonda a monte resta sul ricco (media ${round(mean(o2Idle), 2)} V nel ${Math.round(richShare * 100)} % dei campioni) invece di oscillare: miscela ricca al minimo, coerente con P0172.`,
+      });
+    }
+  }
+
   let trimProblem = false;
+  let idleTrimNote = "";
   const dettagli: string[] = [];
   for (const [dove, group] of [["al minimo", idleWarm], ["in marcia", moving]] as const) {
     const t = trimsOf(group);
@@ -96,7 +115,8 @@ export function evaluateHealth(input: {
     const ltft = mean(t.map((v) => v["07"]));
     const tot = stft + ltft;
     const dett = `breve ${round(stft, 1)} %, lunga ${round(ltft, 1)} %, totale ${round(tot, 1)} %`;
-    dettagli.push(`${dove}: ${dett}`);
+    if (!(dove === "al minimo" && richIdle)) dettagli.push(`${dove}: ${dett}`);
+    else idleTrimNote = ` Correzione al minimo: ${dett}.`;
     const abs = Math.abs(tot);
     if (abs >= SOGLIE.correzioneAttenzione) {
       trimProblem = true;
@@ -110,18 +130,9 @@ export function evaluateHealth(input: {
     }
   }
   if (!trimProblem && dettagli.length > 0) ok.push(`Correzioni carburante nella norma (${dettagli.join("; ")}).`);
-
-  // --- al minimo la sonda a monte dovrebbe oscillare; se resta sempre sul ricco la miscela è ricca
-  const o2Idle = idleWarm.map((s) => parseValues(s.values_json)["14"]).filter((v): v is number => typeof v === "number");
-  if (o2Idle.length >= 5) {
-    const richShare = o2Idle.filter((v) => v > 0.7).length / o2Idle.length;
-    if (richShare >= 0.9) {
-      problemi.push({
-        livello: "attenzione",
-        area: "sonda lambda / miscela",
-        messaggio: `Al minimo la sonda a monte resta sul ricco (media ${round(mean(o2Idle), 2)} V nel ${Math.round(richShare * 100)} % dei campioni) invece di oscillare: miscela ricca al minimo, coerente con P0172.`,
-      });
-    }
+  if (idleTrimNote) {
+    const p = problemi.find((x) => x.area === "sonda lambda / miscela");
+    if (p) p.messaggio += idleTrimNote;
   }
 
   // --- spia e codici

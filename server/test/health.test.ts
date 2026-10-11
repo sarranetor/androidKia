@@ -89,3 +89,15 @@ test("miscela ricca solo al minimo: non nascosta dalla media in marcia (caso rea
   assert.doesNotMatch(msgs, /In marcia la centralina/);
   assert.equal(h.esito, "attenzione");
 });
+
+test("un solo campione basso (avviamento) non è un guasto della batteria", () => {
+  const h = evaluateHealth({ ...base, snapshots: [...many(40, { battery: 13.6 }), snap({ ts: NOW - 999999, battery: 11.3 })] });
+  assert.equal(h.problemi.filter((p) => p.area.includes("batteria")).length, 0);
+});
+
+test("sonda ricca al minimo: il riepilogo non dice che il minimo è nella norma", () => {
+  const idle = many(20, { speed: 0, rpm: 660, coolant: 92 }, { "06": -8.8, "07": -1, "14": 0.87 });
+  const h = evaluateHealth({ ...base, snapshots: idle });
+  assert.ok(!h.valori_nella_norma.some((v) => v.includes("al minimo")));
+  assert.match(h.problemi.find((p) => p.area === "sonda lambda / miscela")!.messaggio, /Correzione al minimo/);
+});
