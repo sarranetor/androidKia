@@ -58,6 +58,18 @@ test("codici attivi e spia", () => {
   assert.match(mil.problemi[0].messaggio, /spia motore/);
 });
 
+test("test della centralina: non superato è un problema, superato va nella norma", () => {
+  const status = { info: null, supported: [], calibration: null, milOn: false, readiness: null, ts: NOW };
+  const test = (passed: boolean | null) => ({ name: "Catalizzatore", tid: 160, value: 350, min: 0, max: 300, passed });
+  const bad = evaluateHealth({ ...base, snapshots: many(3, {}), status: { ...status, monitorTests: [test(false)] } });
+  assert.equal(bad.esito, "attenzione");
+  assert.match(bad.problemi.find((p) => p.area === "test centralina")!.messaggio, /Catalizzatore.*non superato/);
+  const good = evaluateHealth({ ...base, snapshots: many(3, {}), status: { ...status, monitorTests: [test(true)] } });
+  assert.match(good.valori_nella_norma.join(" "), /Catalizzatore: test della centralina superato/);
+  const none = evaluateHealth({ ...base, snapshots: many(3, {}), status: { ...status, monitorTests: [test(null)] } });
+  assert.equal(none.problemi.filter((p) => p.area === "test centralina").length, 0);
+});
+
 test("monitor incompleti: info, non cambiano l'esito", () => {
   const h = evaluateHealth({
     ...base, snapshots: many(3, {}),

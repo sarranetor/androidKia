@@ -149,6 +149,15 @@ export function evaluateHealth(input: {
   }
   if (codes.length === 0 && status?.milOn === false) ok.push("Nessun codice errore attivo, spia spenta.");
 
+  // --- test della centralina (modo 06)
+  for (const t of status?.monitorTests ?? []) {
+    if (t.passed === false) {
+      problemi.push({ livello: "attenzione", area: "test centralina", messaggio: `${t.name}: test non superato (valore ${t.value}, limiti ${t.min}…${t.max}).` });
+    } else if (t.passed === true) {
+      ok.push(`${t.name}: test della centralina superato.`);
+    }
+  }
+
   // --- monitor di prontezza
   const incompleti = (status?.readiness ?? []).filter((m) => !m.complete).map((m) => m.name);
   if (incompleti.length > 0) {

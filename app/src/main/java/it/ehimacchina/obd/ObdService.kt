@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.content.Context
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.CoroutineScope
@@ -93,5 +94,31 @@ class ObdService : Service() {
         const val ACTION_STOP = "it.ehimacchina.obd.STOP"
         private const val CHANNEL_ID = "obd"
         private const val NOTIFICATION_ID = 1
+        private const val ALERT_CHANNEL_ID = "codici"
+        private const val ALERT_NOTIFICATION_ID = 2
+
+        /** Avviso con suono, visibile anche a schermo bloccato: canale separato da quello fisso del servizio. */
+        fun showCodeAlert(context: Context, news: CodeNews, simulated: Boolean) {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(
+                NotificationChannel(ALERT_CHANNEL_ID, "Avvisi codici errore", NotificationManager.IMPORTANCE_HIGH),
+            )
+            val open = PendingIntent.getActivity(
+                context, 2, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
+            )
+            manager.notify(
+                ALERT_NOTIFICATION_ID,
+                NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_stat_gauge)
+                    .setContentTitle(news.title + if (simulated) " (simulatore)" else "")
+                    .setContentText(news.body)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(news.body))
+                    .setContentIntent(open)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setAutoCancel(true)
+                    .build(),
+            )
+        }
     }
 }

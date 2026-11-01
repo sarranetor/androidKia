@@ -58,6 +58,19 @@ object Events {
                     JSONArray().also { a -> r.monitors.forEach { a.put(JSONObject().put("name", it.name).put("complete", it.complete)) } }
                 } ?: JSONObject.NULL,
             )
+            diagnosis?.monitorTests?.let { tests ->
+                put(
+                    "monitorTests",
+                    JSONArray().also { a ->
+                        tests.forEach {
+                            a.put(
+                                JSONObject().put("name", it.name).put("tid", it.tid).put("value", it.value)
+                                    .put("min", it.min).put("max", it.max).put("passed", it.passed ?: JSONObject.NULL),
+                            )
+                        }
+                    },
+                )
+            }
             if (simulated) put("simulated", true)
         }.toString()
 }

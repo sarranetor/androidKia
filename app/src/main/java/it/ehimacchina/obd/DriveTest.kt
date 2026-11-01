@@ -138,6 +138,10 @@ class DriveTestAnalyzer(val startMs: Long) {
         val findings = mutableListOf<Finding>()
         fun add(level: FindingLevel, text: String) { findings += Finding(level, text) }
         val data = mutableListOf<String>()
+        // lo stato più recente dei codici e dei test della centralina
+        val latest = endDiag?.takeIf { it.stored != null } ?: startDiag
+        val catalystCodeNow = "P0420" in latest?.stored.orEmpty() + latest?.pending.orEmpty()
+        val catalystTests = latest?.monitorTests.orEmpty().filter { it.mid == Mode06.CATALYST && it.passed != null }
 
         val cruise = samples.filter { isCruise(it) }
         val warm = samples.filter { isWarm(it) && isRunning(it) }
@@ -198,7 +202,14 @@ class DriveTestAnalyzer(val startMs: Long) {
                     val crossRatio = if (preX > 0) crossings(postVals).toDouble() / preX else 0.0
                     data += "Rapporto oscillazione valle/monte: %.2f · passaggi ricco/magro valle/monte: %.2f".format(ratio, crossRatio)
                     when {
-                        ratio >= 0.7 || crossRatio >= 0.6 -> add(FindingLevel.ATTENZIONE, "Catalizzatore: la sonda a valle copia quella a monte anche a regime stabile (oscillazione %.2f, passaggi %.2f): il catalizzatore trattiene poco ossigeno, efficienza bassa, coerente con P0420. Da far verificare in officina.".format(ratio, crossRatio))
+                        ratio >= 0.7 || crossRatio >= 0.6 -> add(FindingLevel.ATTENZIONE, "Catalizzatore: la sonda a valle copia quella a monte anche a regime stabile (oscillazione %.2f, passaggi %.2f): il catalizzatore sembra trattenere poco ossigeno. %s".format(
+                            ratio, crossRatio,
+                            when {
+                                catalystCodeNow -> "Coerente con P0420. Da far verificare in officina."
+                                catalystTests.isNotEmpty() && catalystTests.all { it.passed == true } -> "La centralina però non segnala P0420 e il suo test risulta superato: indizio da confermare in officina."
+                                else -> "La centralina però non segnala P0420: indizio da confermare in officina."
+                            },
+                        ))
                         ratio < 0.4 && crossRatio < 0.3 -> add(FindingLevel.OK, "Catalizzatore: la sonda a valle è molto più stabile di quella a monte (rapporto %.2f): efficienza buona.".format(ratio))
                         else -> add(FindingLevel.INFO, "Catalizzatore: valori intermedi (oscillazione %.2f, passaggi %.2f); da tenere d'occhio, ripeti il test.".format(ratio, crossRatio))
                     }
@@ -243,6 +254,12 @@ class DriveTestAnalyzer(val startMs: Long) {
                 trimIdle?.let { "%+.1f %%".format(it.mean) } ?: "—", trimCruise?.let { "%+.1f %%".format(it.mean) } ?: "—"))
         }
 
+        // la centralina può aver rivisto la miscela ricca/povera in un momento che questo test non ha visto
+        val fuelPending = latest?.pending.orEmpty().filter { it in FUEL_CODES }
+        if (!trimProblem && fuelPending.isNotEmpty()) {
+            add(FindingLevel.ATTENZIONE, "Correzioni nella norma in questo test, ma la centralina segnala ancora ${fuelPending.joinToString()} come pendente: ha rivisto il problema di recente, quindi non è risolto.")
+        }
+
         // --- comportamento al minimo a motore caldo: sonda a monte e regolazione
         if (idle.size >= 60) {
             val o2 = idle.mapNotNull { it.get(0x14) }
@@ -258,8 +275,14 @@ class DriveTestAnalyzer(val startMs: Long) {
                         (1 - closed) * 100, if (faultShare > 0.3) " (per un guasto rilevato)" else ""))
                 }
             }
-            if (o2.size >= 60 && richShare >= 0.9) {
+            if (o2.size >= 60) {
                 data += "Al minimo caldo: sonda a monte sul ricco (> 0,7 V) per il %.0f %% del tempo, media %.2f V".format(richShare * 100, o2.average())
+            }
+            canisterAtIdle(idle)?.let { (line, finding) ->
+                data += line
+                finding?.let { add(FindingLevel.INFO, it) }
+            }
+            if (o2.size >= 60 && richShare >= 0.9) {
                 add(FindingLevel.ATTENZIONE, "Al minimo la sonda a monte resta sempre sul ricco (media %.2f V) invece di oscillare: miscela ricca al minimo%s. Coerente con P0172.".format(
                     o2.average(), if (stft != null && stft.std < 0.5) " e correzione breve ferma (la centralina non riesce o non prova a correggere)" else ""))
             }
@@ -299,6 +322,12 @@ class DriveTestAnalyzer(val startMs: Long) {
             }
         }
 
+        // --- test della centralina (modo 06)
+        val ecuTestLines = latest?.monitorTests.orEmpty().map { "${it.name} (test %02X): ${it.outcome} — ${it.detail}".format(it.tid) }
+        latest?.monitorTests.orEmpty().filter { it.passed == false }.forEach {
+            add(FindingLevel.ATTENZIONE, "Test della centralina NON superato: ${it.name} (${it.detail}).")
+        }
+
         // --- codici errore prima/dopo
         val codeLines = mutableListOf<String>()
         if (startDiag != null && endDiag != null && startDiag.stored != null && endDiag.stored != null) {
@@ -313,18 +342,48 @@ class DriveTestAnalyzer(val startMs: Long) {
                 else add(FindingLevel.INFO, "Codici invariati: ${s1.joinToString()}.")
             }
             codeLines += "Prima: ${s0.joinToString().ifEmpty { "nessuno" }} — Dopo: ${s1.joinToString().ifEmpty { "nessuno" }}"
+            codeLines += "Memorizzati: ${endDiag.stored.orEmpty().joinToString().ifEmpty { "nessuno" }} · Pendenti: ${endDiag.pending.orEmpty().joinToString().ifEmpty { "nessuno" }}"
+            if (endMs - endDiag.atMillis > 10_000) {
+                codeLines += "«Dopo» è l'ultima lettura possibile, delle ${SimpleDateFormat("HH:mm", Locale.ITALY).format(Date(endDiag.atMillis))}: poi il collegamento si è chiuso."
+            }
         } else {
             codeLines += "Codici non confrontabili (lettura mancante)."
         }
 
         val order = compareBy<Finding> { when (it.level) { FindingLevel.ATTENZIONE -> 0; FindingLevel.INFO -> 1; FindingLevel.OK -> 2 } }
         val sorted = findings.sortedWith(order)
-        return DriveReport(startMs, endMs, sorted, buildText(startMs, durationMs, sorted, data, monitorLines, codeLines))
+        return DriveReport(startMs, endMs, sorted, buildText(startMs, durationMs, sorted, data, monitorLines, ecuTestLines, codeLines))
+    }
+
+    /**
+     * Sonda a monte al minimo, con canister comandato attivo (PID 2E > 0) e chiuso. Ritorna la riga dei dati
+     * e, se il confronto dice qualcosa, un indizio. Null se il PID non è stato letto abbastanza.
+     */
+    private fun canisterAtIdle(idle: List<Sample>): Pair<String, String?>? {
+        val known = idle.filter { it.get(0x2E) != null && it.get(0x14) != null }
+        if (known.size < MIN_CANISTER_SAMPLES) return null
+        val (active, closed) = known.partition { it.get(0x2E)!! > 0.0 }
+        fun richShare(group: List<Sample>) =
+            if (group.size < MIN_CANISTER_SAMPLES) null else group.count { it.get(0x14)!! > 0.7 } * 100.0 / group.size
+        val richActive = richShare(active)
+        val richClosed = richShare(closed)
+        fun show(x: Double?) = x?.let { "%.0f %%".format(it) } ?: "pochi dati"
+        val line = "Al minimo caldo: canister attivo per il %.0f %% del tempo; sul ricco %s col canister attivo, %s col canister chiuso".format(
+            active.size * 100.0 / known.size, show(richActive), show(richClosed),
+        )
+        val finding = when {
+            richActive != null && richClosed != null && richActive - richClosed >= 30 ->
+                "Al minimo la miscela è più ricca quando il canister è attivo (%.0f %% contro %.0f %%): indizio verso i vapori del canister.".format(richActive, richClosed)
+            richClosed != null && richClosed >= 70 ->
+                "Al minimo la miscela è ricca anche col canister comandato chiuso (%.0f %%): o la valvola non chiude bene o la causa è un'altra. Per distinguere: «Prova al minimo» col tubo del canister chiuso.".format(richClosed)
+            else -> null
+        }
+        return line to finding
     }
 
     private fun buildText(
         start: Long, durationMs: Long, findings: List<Finding>,
-        data: List<String>, monitors: List<String>, codes: List<String>,
+        data: List<String>, monitors: List<String>, ecuTests: List<String>, codes: List<String>,
     ): String = buildString {
         val date = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.ITALY).format(Date(start))
         appendLine("TEST DI GUIDA DIAGNOSTICO — $date — durata ${mmss(durationMs)}")
@@ -343,6 +402,11 @@ class DriveTestAnalyzer(val startMs: Long) {
             appendLine("MONITOR DI PRONTEZZA")
             monitors.forEach { appendLine("  $it") }
         }
+        if (ecuTests.isNotEmpty()) {
+            appendLine()
+            appendLine("TEST DELLA CENTRALINA (MODO 06, NUMERI GREZZI)")
+            ecuTests.forEach { appendLine("  $it") }
+        }
         appendLine()
         appendLine("CODICI ERRORE")
         codes.forEach { appendLine("  $it") }
@@ -352,6 +416,8 @@ class DriveTestAnalyzer(val startMs: Long) {
 
     companion object {
         const val WARM_C = 75.0
+        private const val MIN_CANISTER_SAMPLES = 30
+        private val FUEL_CODES = setOf("P0170", "P0171", "P0172", "P0173", "P0174", "P0175")
 
         fun mmss(ms: Long): String {
             val s = max(0L, ms) / 1000

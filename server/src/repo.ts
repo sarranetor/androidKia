@@ -15,6 +15,8 @@ export type ReportRow = { start_ms: number; end_ms: number; text: string };
 export type StatusDoc = {
   info: string | null; supported: number[]; calibration: number | null; milOn: boolean | null;
   readiness: { name: string; complete: boolean }[] | null; ts: number;
+  /** Assente nei dati salvati prima dell'aggiunta del modo 06 */
+  monitorTests?: { name: string; tid: number; value: number; min: number; max: number; passed: boolean | null }[] | null;
 };
 
 export interface Repo {

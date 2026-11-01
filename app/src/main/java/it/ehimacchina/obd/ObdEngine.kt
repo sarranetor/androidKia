@@ -77,6 +77,8 @@ data class UiState(
     val driveReport: String? = null,
     /** Vista "prova al minimo" (null se chiusa) */
     val idle: IdleUi? = null,
+    /** Ultimo avviso per un codice nuovo, finché l'utente non lo chiude */
+    val codeAlert: CodeNews? = null,
 )
 
 /**
@@ -113,6 +115,11 @@ object ObdEngine {
     private var driveStartDiag: Diagnosis? = null
     private var lastReadinessMs = 0L
     private var driveSilentSinceMs = 0L
+
+    // controllo dei codici durante la guida
+    private const val CODE_CHECK_EVERY_MS = 60_000L
+    private var lastCodeCheckMs = 0L
+    private var lastMilOn: Boolean? = null
 
     // vista "prova al minimo"
     @Volatile private var idle: IdleMonitor? = null
@@ -151,7 +158,6 @@ object ObdEngine {
         sync.kick()
     }
 
-    /** Attese fra un tentativo di riconnessione e il successivo (l'ultima si ripete) */
     private var currentMode = Mode.REAL
 
     /** Simulatore e riproduzione: i dati si salvano ma marcati "simulati", mai mescolati a quelli veri. */
@@ -161,7 +167,7 @@ object ObdEngine {
     private const val SNAPSHOT_EVERY_MS = 15_000L
     private var lastSnapshotSentMs = 0L
 
-    private val retryDelaysSec = listOf(2L, 5L, 10L)
+    private var reconnect = ReconnectPolicy()
 
     fun logFiles(): List<File> =
         SessionLog.logsDir(app.filesDir).listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() }
@@ -182,6 +188,9 @@ object ObdEngine {
         }
         currentMode = mode
         sessionStartMs = System.currentTimeMillis()
+        reconnect = ReconnectPolicy()
+        lastCodeCheckMs = 0
+        lastMilOn = null
         val log = SessionLog.newSession(app.filesDir, tag)
         currentLog.value = log
         // running = true subito (non dentro la coroutine): il Service lo guarda appena parte
@@ -190,11 +199,10 @@ object ObdEngine {
         job = scope.launch {
             try {
                 refreshCalibration()
-                var attempt = 0
                 while (true) {
                     val transport = LoggingTransport(makeTransport(mode, deviceAddress, replayFile), log)
                     try {
-                        runSession(transport, log, attempt)
+                        runSession(transport, log, reconnect.attempt)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -206,9 +214,15 @@ object ObdEngine {
                     } finally {
                         transport.close()
                     }
-                    attempt++
-                    val wait = retryDelaysSec[minOf(attempt - 1, retryDelaysSec.lastIndex)]
-                    setStatus("Collegamento perso — riprovo tra ${wait}s (tentativo $attempt)")
+                    // collegamento assente da troppo: si chiudono viaggio e test, o resterebbero aperti (e mai inviati) fino al prossimo collegamento
+                    val now = System.currentTimeMillis()
+                    if (reconnect.shouldCloseOpenWork(now)) {
+                        finishDrive(null)
+                        endTrip(tracker.finish(now))
+                        _state.update { it.copy(trip = null, litersPerHour = null) }
+                    }
+                    val wait = reconnect.nextDelaySec()
+                    setStatus("Collegamento perso — riprovo tra ${wait}s (tentativo ${reconnect.attempt})")
                     delay(wait * 1000)
                 }
             } finally {
@@ -299,6 +313,8 @@ object ObdEngine {
 
     fun dismissNotice() = _state.update { it.copy(notice = null) }
 
+    fun dismissCodeAlert() = _state.update { it.copy(codeAlert = null) }
+
     fun addRefuel(liters: Double, km: Double) {
         scope.launch {
             db.dao().insertRefuel(RefuelEntity(dateMs = System.currentTimeMillis(), liters = liters, km = km))
@@ -324,7 +340,7 @@ object ObdEngine {
 
     @SuppressLint("MissingPermission") // permesso chiesto da MainActivity prima di arrivare qui
     private fun makeTransport(mode: Mode, address: String?, replayFile: File?): Transport = when (mode) {
-        Mode.SIMULATOR -> SimulatedTransport()
+        Mode.SIMULATOR -> SimulatedTransport(newCodeAfterSec = 120)
         Mode.REPLAY -> ReplayTransport(replayFile!!)
         Mode.REAL -> {
             val adapter = (app.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -346,12 +362,12 @@ object ObdEngine {
         _state.update { it.copy(supported = supported, status = "Lettura in corso") }
 
         val normalPoller = Poller(elm, supported.mapNotNull { Pids.get(it) })
-        // durante il test di guida: sonde O2 e giri a ogni ciclo, 3 PID lenti a rotazione
+        // durante il test di guida: sonde O2 e giri a ogni ciclo, 3 PID lenti a rotazione (canister, farfalla ecc. inclusi: senza, resterebbero al valore vecchio)
         fun known(ids: List<Int>) = ids.filter { it in supported }.mapNotNull { Pids.get(it) }
         // vista minimo: sonda a monte, correzione breve e giri a ogni ciclo (~2–3 letture al secondo)
         val idlePoller = Poller(elm, known(listOf(0x14, 0x06, 0x0C)), known(listOf(0x07, 0x05, 0x03, 0x2E, 0x15)), 2)
         val drivePoller = Poller(
-            elm, known(listOf(0x14, 0x15, 0x0C, 0x0D, 0x04, 0x0B)), known(listOf(0x03, 0x05, 0x06, 0x07, 0x3C, 0x44, 0x0F, 0x43)), 3,
+            elm, known(listOf(0x14, 0x15, 0x0C, 0x0D, 0x04, 0x0B)), known(listOf(0x03, 0x05, 0x06, 0x07, 0x3C, 0x44, 0x0F, 0x43, 0x2E, 0x11, 0x0E, 0x31, 0x46)), 3,
         )
         var lastBattery = 0L
         // all'avvio una diagnosi automatica, così il cruscotto sa subito se ci sono codici
@@ -374,6 +390,8 @@ object ObdEngine {
             trackTrip()
             trackDrive(elm, 0x3C in supported)
             trackIdle()
+            watchCodes(elm)
+            reconnect.onData(System.currentTimeMillis())
             if (System.currentTimeMillis() - lastBattery > 5000) {
                 lastBattery = System.currentTimeMillis()
                 val v = elm.batteryVoltage()
@@ -448,6 +466,21 @@ object ObdEngine {
         }
     }
 
+    /** A motore acceso, ogni minuto: la spia dell'auto non funziona, quindi un codice nuovo lo deve vedere l'app. */
+    private suspend fun watchCodes(elm: Elm327) {
+        val now = System.currentTimeMillis()
+        if (now - lastCodeCheckMs < CODE_CHECK_EVERY_MS) return
+        if ((_state.value.values[0x0C] ?: 0.0) < Alerts.ENGINE_RUNNING_RPM) return
+        lastCodeCheckMs = now
+        val previous = _state.value.diagnosis?.takeIf { it.stored != null }
+        // collegato a quadro spento: la lettura iniziale non ha dato niente, serve quella completa
+        val d = (if (previous != null) elm.checkCodes(previous) else elm.readDiagnosis().takeIf { it.stored != null }) ?: return
+        val changed = previous == null || d.milOn != previous.milOn || d.stored != previous.stored ||
+            d.pending != previous.pending || d.readiness != previous.readiness
+        if (changed) recordDiagnosis(d) // l'invio al server parte subito, ma senza traffico a ogni minuto se non cambia niente
+        _state.update { it.copy(diagnosis = d) }
+    }
+
     private fun trackIdle() {
         val m = idle ?: return
         val now = System.currentTimeMillis()
@@ -462,22 +495,24 @@ object ObdEngine {
     private suspend fun finishDrive(elm: Elm327?) {
         val d = drive ?: return
         drive = null
-        val endDiag = try {
-            elm?.readDiagnosis()
+        val fresh = try {
+            elm?.readDiagnosis()?.takeIf { it.stored != null }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             null
         }
-        endDiag?.let {
+        fresh?.let {
             recordDiagnosis(it)
             it.readiness?.let { r -> d.readinessNow = r }
         }
+        // collegamento caduto o quadro già spento: vale l'ultima lettura fatta durante il test
+        val endDiag = fresh ?: _state.value.diagnosis?.takeIf { it.stored != null && it.atMillis >= d.startMs }
         val now = System.currentTimeMillis()
         val report = d.report(now, driveStartDiag, endDiag)
         db.dao().insertDriveReport(DriveReportEntity(startMs = report.startMs, endMs = report.endMs, text = report.text, simulated = simulated))
         enqueue(Events.driveReport(report.startMs, report.endMs, report.text, simulated))
-        _state.update { it.copy(drive = null, driveReport = report.text, diagnosis = endDiag ?: it.diagnosis) }
+        _state.update { it.copy(drive = null, driveReport = report.text, diagnosis = fresh ?: it.diagnosis) }
     }
 
     /** Cancellazione codici: ricontrolla le condizioni, salva codici e freeze frame, poi invia "04". */
@@ -511,10 +546,12 @@ object ObdEngine {
     private suspend fun recordDiagnosis(d: Diagnosis) {
         if (d.milOn == null && d.stored == null) return // centralina non raggiungibile: niente da registrare
         val dao = db.dao()
-        val all = (d.stored.orEmpty().map { it to "memorizzato" } + d.pending.orEmpty().map { it to "pendente" })
-            .distinctBy { it.first }
-        for ((code, kind) in all) {
+        val openBefore = dao.openDtcs(simulated).associate { it.code to it.kind }
+        val all = (d.stored.orEmpty() + d.pending.orEmpty()).distinct().map { it to Dtc.kindOf(it, d.stored, d.pending) }
+        for ((code, readKind) in all) {
             val open = dao.openDtc(code, simulated)
+            // con una delle due liste illeggibile il tipo non si può stabilire: resta quello noto
+            val kind = if (open != null && (d.stored == null || d.pending == null)) open.kind else readKind
             val freeze = d.freezeFrame?.textFor(code)
             if (open == null) {
                 dao.insertDtc(DtcEntity(code = code, kind = kind, firstSeenMs = d.atMillis, lastSeenMs = d.atMillis, clearedMs = null, freeze = freeze, simulated = simulated))
@@ -535,6 +572,11 @@ object ObdEngine {
         dao.allDtcs().filter { it.simulated == simulated && (it.clearedMs == null || it.clearedMs == d.atMillis) }.forEach { enqueue(Events.dtc(it)) }
         val s = _state.value
         enqueue(Events.status(d.atMillis, s.info, s.supported, calibration, d, simulated))
+        CodeNews.find(openBefore, d.stored, d.pending, lastMilOn, d.milOn)?.let { news ->
+            _state.update { it.copy(codeAlert = news) }
+            ObdService.showCodeAlert(app, news, simulated)
+        }
+        d.milOn?.let { lastMilOn = it }
     }
 
     /** Aggiorna viaggio e consumi dopo ogni ciclo di lettura; salva su database (solo auto vera). */

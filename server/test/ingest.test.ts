@@ -88,6 +88,21 @@ test("drive_report e status", () => {
   assert.deepEqual(saved.supported, [1, 4]);
   assert.deepEqual(saved.readiness, [{ name: "Catalizzatore", complete: false }]);
   assert.equal("extra" in saved, false);
+  assert.equal(saved.monitorTests, null);
+
+  const withTests = buildStatement({
+    type: "status", ts: 99,
+    monitorTests: [
+      { name: "Catalizzatore", tid: 160, value: 150, min: 0, max: 300, passed: true, extra: 1 },
+      { name: "Sonda", tid: 1, value: 0, min: 0, max: 0, passed: null },
+      { name: "rotto", tid: "x" },
+    ],
+  });
+  assert.ok(typeof withTests !== "string");
+  assert.deepEqual(JSON.parse(withTests.params[1] as string).monitorTests, [
+    { name: "Catalizzatore", tid: 160, value: 150, min: 0, max: 300, passed: true },
+    { name: "Sonda", tid: 1, value: 0, min: 0, max: 0, passed: null },
+  ]);
 });
 
 test("tipo sconosciuto e non-oggetti", () => {

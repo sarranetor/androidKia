@@ -69,7 +69,7 @@ test("stato_attuale: dati recenti e vecchi", async () => {
   assert.match(o.aggiornato_da, /ore/);
 });
 
-test("codici_errore: attivi con descrizione e freeze; cancellati solo se richiesti", async () => {
+test("codici_errore: attivi con descrizione e freeze; non più presenti solo se richiesti", async () => {
   const repo = new FakeRepo();
   repo.codes.push(dtc("P0172", { freeze: "P0172;0C=2100.0" }), dtc("P0420", { kind: "pendente" }), dtc("P0133", { cleared_ms: NOW - 1000 }));
   const r = await run(repo, "codici_errore");
@@ -78,10 +78,27 @@ test("codici_errore: attivi con descrizione e freeze; cancellati solo se richies
   assert.match(c.descrizione, /ricca/);
   assert.match(c.presente_da, /giorni/);
   assert.equal(c.freeze_frame.valori["giri motore"], "2100 rpm");
-  assert.equal(r.cancellati_di_recente, undefined);
+  assert.equal(r.non_piu_presenti, undefined);
   const r2 = await run(repo, "codici_errore", { includi_cancellati: true });
-  assert.equal(r2.cancellati_di_recente.length, 1);
-  assert.equal(r2.cancellati_di_recente[0].codice, "P0133");
+  assert.equal(r2.non_piu_presenti.length, 1);
+  assert.equal(r2.non_piu_presenti[0].codice, "P0133");
+  assert.ok(r2.non_piu_presenti[0].non_piu_presente_dal);
+});
+
+test("codici_errore: test della centralina (modo 06)", async () => {
+  const repo = new FakeRepo();
+  assert.deepEqual((await run(repo, "codici_errore")).test_centralina, []);
+  repo.statusDoc = {
+    info: null, supported: [], calibration: 1, milOn: true, readiness: null, ts: NOW,
+    monitorTests: [
+      { name: "Catalizzatore", tid: 160, value: 150, min: 0, max: 300, passed: true },
+      { name: "Sonda O2 a valle", tid: 1, value: 0, min: 0, max: 0, passed: null },
+    ],
+  };
+  const r = await run(repo, "codici_errore");
+  assert.equal(r.test_centralina[0].esito, "superato");
+  assert.equal(r.test_centralina[0].massimo, 300);
+  assert.equal(r.test_centralina[1].esito, "non eseguito");
 });
 
 test("codici_errore: nessun codice", async () => {

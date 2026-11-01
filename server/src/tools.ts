@@ -48,7 +48,8 @@ function codeView(c: DtcRow, now: number) {
     visto_la_prima_volta: quando(c.first_seen_ms),
     presente_da: eta((now - c.first_seen_ms) / 1000),
     ultima_conferma: quando(c.last_seen_ms),
-    ...(c.cleared_ms ? { cancellato: quando(c.cleared_ms) } : {}),
+    // sparito da solo oppure cancellato: dal dato non si distingue
+    ...(c.cleared_ms ? { non_piu_presente_dal: quando(c.cleared_ms) } : {}),
     freeze_frame: decodeFreeze(c.freeze),
   };
 }
@@ -106,10 +107,10 @@ export function makeTools(repo: Repo, now: () => number = Date.now): Tool[] {
       name: "codici_errore",
       description:
         "Codici errore (DTC) attivi della centralina, con descrizione in italiano, da quanto sono presenti e freeze frame " +
-        "(valori al momento del guasto). Opzionale: includi quelli cancellati di recente.",
+        "(valori al momento del guasto). Include i test della centralina su catalizzatore e sonde (modo 06, numeri grezzi da confrontare solo con i loro limiti). Opzionale: includi i codici non più presenti (spariti da soli o cancellati).",
       inputSchema: {
         type: "object",
-        properties: { includi_cancellati: { type: "boolean", description: "Includi gli ultimi codici cancellati (default no)" } },
+        properties: { includi_cancellati: { type: "boolean", description: "Includi gli ultimi codici non più presenti (default no)" } },
         additionalProperties: false,
       },
       async run(args) {
@@ -119,9 +120,17 @@ export function makeTools(repo: Repo, now: () => number = Date.now): Tool[] {
           spia_motore_accesa: status?.milOn ?? null,
           numero_codici_attivi: active.length,
           codici_attivi: active.map((c) => codeView(c, t)),
+          test_centralina: (status?.monitorTests ?? []).map((m) => ({
+            monitor: m.name,
+            test: m.tid,
+            esito: m.passed === null ? "non eseguito" : m.passed ? "superato" : "non superato",
+            valore: m.value,
+            minimo: m.min,
+            massimo: m.max,
+          })),
         };
         if (args.includi_cancellati === true) {
-          out.cancellati_di_recente = (await repo.recentClearedCodes(10)).map((c) => codeView(c, t));
+          out.non_piu_presenti = (await repo.recentClearedCodes(10)).map((c) => codeView(c, t));
         }
         if (active.length === 0) out.nota = "Nessun codice attivo registrato (se l'app non è collegata da tempo, l'informazione potrebbe non essere aggiornata).";
         return out;

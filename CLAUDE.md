@@ -22,12 +22,14 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - **Fase 2b: codice fatto, test PC ok, da provare in auto.** "Test di guida diagnostico": `DriveTest.kt` (`DriveTestAnalyzer`: checklist condizioni + rapporto con indizi OK/info/ATTENZIONE), `Readiness.kt` (monitor di prontezza da 0101, mostrati anche nella pagina Codici), poller dedicato (O2 monte/valle, giri, velocità, carico, MAP a ogni ciclo + 3 lenti a rotazione), confronto codici prima/dopo, rapporto salvato nel DB (`drive_reports`, migrazione Room 1→2) e condivisibile come testo.
 - **Fase 3: codice fatto e provato in locale (telefono → adb reverse → wrangler dev), PUBBLICATO su Cloudflare il 11/10/2026** (vedi sotto). Server in `server/` (Worker TS + D1, `/api/ingest|ping|latest`, auth Bearer, 19 test + `scripts/smoke.ts`). App: coda in uscita Room (`outbox`, DB v3), `Events.kt`, `Sync.kt` (`SyncManager`: gruppi da 50, backoff 15 s→5 min, 401 ferma l'invio, 400/413/422 scarta il gruppo), pagina Server (URL, token, interruttore, prova, invia ora, invia storico), snapshot ogni 15 s in viaggio, viaggio a fine corsa, codici a ogni diagnosi, rapporti, stato.
 - **Fase 4: server MCP + OAuth pubblicati e provati end-to-end (locale e produzione) con client MCP ufficiale; manca solo la prova dal vivo con claude.ai (richiede l'account dell'utente).** `server/src/`: `mcp.ts` (JSON-RPC a mano, senza SDK), `tools.ts` (6 strumenti), `health.ts` (controllo salute), `dtc.ts` (descrizioni IT), `authorize.ts` + `authpage.ts` (pagina password), `ratelimit.ts`, `api.ts` (ingest), `index.ts` (OAuthProvider). 50 test + `scripts/oauth-e2e.ts`.
-- Fase 5: da fare (avvio automatico, avvisi, risparmio batteria).
+- Avvisi per codici nuovi: fatti il 01/11/2026 (vedi «Correzioni del 01/11/2026»).
+- Fase 5: da fare (avvio automatico, risparmio batteria).
 
 ## Struttura (`app/src/main/java/it/ehimacchina/obd/`)
 - `Transport.kt` interfaccia canale; `BluetoothTransport` (SPP, fallback canale 1 per cloni), `SimulatedTransport`, `ReplayTransport`, `LoggingTransport` (in `SessionLog.kt`).
 - `Elm327.kt` protocollo (senza dipendenze Android → testabile). `Pid.kt` tabella PID e decodifica.
 - `Ui.kt`: tema scuro (predefinito) o chiaro, scelto con l'interruttore nella home e salvato in preferenze `ui`/`light` (`AppColors` Dark/Light + `LocalAppColors`; `Palette.X` sono getter @Composable, quindi usabili solo in composizione: nei `Canvas` leggere il colore prima). Palette ( accento ciano, stati Ok/Warn/Crit) e componenti condivisi (`PageScaffold`, `SectionCard`, `MetricTile`, `Banner`, `CheckRow`, `ChoiceCard`, `NavTile`, `CodeBadge`…). Icona app adattiva `ic_launcher_foreground` (contagiri) e `ic_stat_gauge` per la notifica. Edge-to-edge con `safeDrawingPadding()` (targetSdk 35).
+- `Mode06.kt` (test centralina), `CodeNews.kt` (novità nei codici), `Reconnect.kt` (attese di riconnessione).
 - `DriveTest.kt`, `Readiness.kt`, `Events.kt` (JSON verso il server), `Sync.kt` (impostazioni, rete, coda, `SyncManager`).
 - `server/`: `src/index.ts` (router), `ingest.ts` (validazione e SQL, funzioni pure), `auth.ts`; `migrations/0001_init.sql`; `test/`; `scripts/smoke.ts`.
 - `Db.kt` (Room, versione 2), `Consumption.kt` (stima consumi, `Calibration`, `ClearGuard`), `TripTracker.kt`.
@@ -121,10 +123,19 @@ Specifica completa: `~/Downloads/PROMPT_auto_kia.md`. Comunicare in italiano. Pr
 - Il meccanico abituale non usa volentieri la diagnosi: preparata scheda riassuntiva `~/Downloads/kia-ceed-diagnosi.html` (gravità + passi in ordine + frase per l'officina). Valvola canister difficile da raggiungere (sotto il collettore, vedi video i30 G4FA).
 - Idea in sospeso (offerta, non richiesta): pulsante «Scheda per l'officina» nell'app che genera il riepilogo aggiornato.
 
-### PROSSIMO LAVORO (concordato per il 12/10/2026): avvisi "spia sostitutiva" nell'app
-La spia motore reale non funziona (P0650). Da fare (prima piano breve + conferma, come da regole):
-- Durante la guida rileggere ogni ~60 s `0101` (stato spia + numero codici) e `07` (pendenti); `03` se il numero cambia.
-- Se compare un codice nuovo (memorizzato o pendente) o la spia passa ad accesa: banner rosso nel cruscotto, notifica ad alta priorità con suono anche a schermo bloccato (canale notifiche separato da quello del servizio), invio immediato al server.
-- Nessun avviso ripetuto per i codici già noti (P0650, P0172, P0420): solo per le novità.
-- Test con simulatore (codice nuovo che compare dopo N minuti) e con il log reale.
-- Valutare anche: avviso se l'app non è collegata da molti giorni? (solo se l'utente lo vuole)
+### Log 4 — tre viaggi lunghi (24/10 14:24 e 17:15, 01/11 00:54; log e DB letti dal telefono il 01/11/2026)
+- 48 / 50 / 59 km, consumi stimati 8,0 / 5,9 / 7,3 L/100 km (non tarati, nessun rifornimento inserito; i due del 24/10 sembrano salita e discesa). Liquido max 92–93 °C.
+- **Tensione ATRV**: 11,3 V prima dell'avvio, 11,7 V dopo un'ora di guida, 13,6–13,7 V a motore acceso. Batteria debole oppure adattatore che legge ~0,6 V in meno: **da misurare con un tester** (non ancora fatto).
+- **P0172**: al minimo caldo tempo sul ricco 96 % (11/10) → 66 → 22 → 20 %, correzione breve −17,5 % → +0,5 %. Però dal 17/10 è anche **pendente** (`07`), mentre l'11/10 no: non è risolto. Il 24/10 14:24 il ricco cresce per sosta (13, 64, 95, 100, 100 %). Ipotesi vapori canister non verificata: nei test di guida il PID 2E non veniva letto (ora sì).
+- **Catalizzatore**: P0420 sparito da solo fra 17/10 e 24/10, monitor completato (`0101` D=00), nessuno ha cancellato (PID 31 sale senza azzerarsi: 453 → 1029 km). Ma la sonda a valle copia ancora quella a monte (rapporto 0,95–0,99), e al minimo la correlazione ha il massimo con ~0,5 s di ritardo: segnale vero. Contraddizione da risolvere col modo 06.
+- Dal 24/10 al 01/11 la centralina conta 345 km, l'app ne ha 99: ~246 km non registrati (app non collegata).
+
+### Correzioni del 01/11/2026 (provate al PC e col simulatore sul telefono; NON ancora in auto)
+- **Modo 06** (`Mode06.kt`, `Elm327.readMonitorTests`): test centralina su catalizzatore (MID 21) e sonde (01, 02), numeri grezzi + limiti; in Diagnosi, rapporto, `status` al server (`monitorTests`) e strumenti MCP. Formato reale non ancora visto: **al primo viaggio guardare `06xx` nel log**; se la Cee'd non risponde la sezione non compare.
+- **Controllo codici in guida** (`ObdEngine.watchCodes`, `Elm327.checkCodes`): ogni 60 s a motore acceso `0101` + `07`, `03` se cambia il numero. Il rapporto usa l'ultima lettura se a fine test il collegamento è già caduto.
+- **Avviso** (`CodeNews.kt`, `ObdService.showCodeAlert`): codice nuovo, pendente che diventa memorizzato o spia che si accende → banner rosso, notifica canale `codici` (priorità alta, schermo bloccato), invio al server. I codici aperti non si ripetono; **un codice sparito che ricompare (es. P0420) avvisa**. Il simulatore fa comparire P0300 dopo 2 min.
+- Bug corretto: quadro spento fra `0101` e `03`/`07` → NO DATA scambiato per "nessun codice" (ora `0101` riletto dopo).
+- `Dtc.KIND_BOTH` = `memorizzato+pendente`; «cancellato» → «non più presente» (app e server, `non_piu_presenti`). Nessuna migrazione DB.
+- Test di guida: letti anche 2E, farfalla, anticipo, km da cancellazione, temperatura esterna; rapporto con ricco a canister attivo/chiuso; segnala P017x pendente con correzioni ok; cita P0420 solo se c'è.
+- `ReconnectPolicy` (`Reconnect.kt`): attese 2, 5, 10, 30, 60, 120 s, poi ogni 2 min senza fermarsi (scelta utente); dopo 2 min senza dati chiude viaggio e test (causa probabile del viaggio del 17/10 mai inviato, recuperato con «Invia storico»).
+- Da verificare in auto: risposta al modo 06, avviso vero, riconnessione a fine viaggio. Sul telefono era attivo Non disturbare: può silenziare il suono degli avvisi.

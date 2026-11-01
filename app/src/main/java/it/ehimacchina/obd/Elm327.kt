@@ -195,6 +195,8 @@ class Elm327(
         val milOn = status[0] and 0x80 != 0
         val stored = readDtcs("03", 0x43)
         val pending = readDtcs("07", 0x47)
+        // NO DATA su 03/07 vale "nessun codice" solo se la centralina è ancora accesa: se il quadro si è spento nel frattempo non so
+        if (query(0x01, diagTimeoutMs) == null) return Diagnosis(null, null, null, null, System.currentTimeMillis())
         // il freeze frame ha senso solo se c'è almeno un codice
         val hasCodes = milOn || !stored.isNullOrEmpty() || !pending.isNullOrEmpty()
         return Diagnosis(
@@ -205,7 +207,45 @@ class Elm327(
             atMillis = System.currentTimeMillis(),
             freezeFrame = if (hasCodes) readFreezeFrame() else null,
             readiness = Readiness.parse(status),
+            monitorTests = readMonitorTests(),
         )
+    }
+
+    /**
+     * Controllo leggero durante la guida: spia e pendenti sempre, memorizzati solo se il loro numero cambia.
+     * Freeze frame e test del modo 06 restano quelli di [previous]. Null se la centralina non risponde.
+     */
+    suspend fun checkCodes(previous: Diagnosis): Diagnosis? {
+        val status = query(0x01, diagTimeoutMs)?.takeIf { it.isNotEmpty() } ?: return null
+        val count = status[0] and 0x7F
+        val pending = readDtcs("07", 0x47)
+        val stored = if (previous.stored != null && previous.reportedCount == count) previous.stored else readDtcs("03", 0x43)
+        if (query(0x01, diagTimeoutMs) == null) return null // come in readDiagnosis: quadro spento nel frattempo
+        return previous.copy(
+            milOn = status[0] and 0x80 != 0,
+            reportedCount = count,
+            stored = stored,
+            pending = pending,
+            atMillis = System.currentTimeMillis(),
+            readiness = Readiness.parse(status),
+        )
+    }
+
+    /** Test della centralina (modo 06) sui monitor di [Mode06.wanted]. Null se non li fornisce. */
+    suspend fun readMonitorTests(): List<MonitorTest>? {
+        suspend fun ask(mid: Int): List<String>? =
+            try {
+                send("06%02X".format(mid), diagTimeoutMs)
+            } catch (e: ObdTimeout) {
+                null
+            }
+        suspend fun mask(base: Int) = ask(base)?.let { parseResponse(it, 0x46, base, null) }?.takeIf { it.size >= 4 }
+            ?.let { Pids.supportedFromMask(base, it) }
+
+        val low = mask(0x00) ?: return null
+        val supported = if (0x20 in low) low + mask(0x20).orEmpty() else low
+        val tests = Mode06.wanted.filter { it in supported }.flatMap { mid -> ask(mid)?.let { Mode06.parse(it, mid) }.orEmpty() }
+        return tests.takeIf { it.isNotEmpty() }
     }
 
     private suspend fun readDtcs(cmd: String, responseByte: Int): List<String>? =
@@ -246,7 +286,7 @@ class Elm327(
             val c = cmd.trim().uppercase().replace(" ", "")
             if (c.startsWith("AT")) return true
             if (c.length < 2 || !c.all { it in "0123456789ABCDEF" }) return false
-            return c.substring(0, 2) in setOf("01", "02", "03", "07", "09", "0A")
+            return c.substring(0, 2) in setOf("01", "02", "03", "06", "07", "09", "0A")
         }
     }
 }

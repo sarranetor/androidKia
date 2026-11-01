@@ -15,6 +15,8 @@ data class Diagnosis(
     val freezeFrame: FreezeFrame? = null,
     /** Monitor di prontezza (PID 0101), se letti */
     val readiness: Readiness? = null,
+    /** Test della centralina su catalizzatore e sonde (modo 06), se li fornisce */
+    val monitorTests: List<MonitorTest>? = null,
 )
 
 /** Freeze frame: il codice che l'ha causato e i valori (chiave = PID) letti in quel momento. */
@@ -41,6 +43,17 @@ data class FreezeFrame(val code: String, val values: Map<Int, Double>) {
 }
 
 object Dtc {
+    const val KIND_STORED = "memorizzato"
+    const val KIND_PENDING = "pendente"
+    const val KIND_BOTH = "memorizzato+pendente"
+
+    /** Tipo di un codice secondo le liste dei modi 03 e 07: un memorizzato può essere anche pendente. */
+    fun kindOf(code: String, stored: List<String>?, pending: List<String>?): String {
+        val isStored = stored.orEmpty().contains(code)
+        val isPending = pending.orEmpty().contains(code)
+        return if (isStored && isPending) KIND_BOTH else if (isStored) KIND_STORED else KIND_PENDING
+    }
+
     /** Trasforma due byte nel codice, es. 0x01 0x33 → "P0133". */
     fun decode(b1: Int, b2: Int): String {
         val letter = "PCBU"[(b1 shr 6) and 0x03]
@@ -58,6 +71,29 @@ object Dtc {
      *  - protocolli vecchi: "43 0133 0000 0000" (senza numero codici, coppie 0000 = riempimento)
      */
     fun parse(lines: List<String>, responseByte: Int): List<String>? {
+        val messages = messages(lines, responseByte)
+        if (messages.isEmpty()) {
+            // "NO DATA" = la centralina non ha niente da dire = nessun codice
+            return if (lines.any { it.contains("NO DATA") }) emptyList() else null
+        }
+
+        val codes = linkedSetOf<String>()
+        for (m in messages) {
+            if (m.firstOrNull() != responseByte) continue
+            var rest = m.drop(1)
+            if (rest.size % 2 == 1) rest = rest.drop(1) // primo byte = numero di codici
+            for (i in 0 until rest.size / 2) {
+                val b1 = rest[2 * i]
+                val b2 = rest[2 * i + 1]
+                if (b1 == 0 && b2 == 0) continue
+                codes += decode(b1, b2)
+            }
+        }
+        return codes.toList()
+    }
+
+    /** Ricompone le risposte in byte: righe singole che iniziano con [responseByte] e risposte CAN su più frame. */
+    fun messages(lines: List<String>, responseByte: Int): List<List<Int>> {
         val prefix = "%02X".format(responseByte)
         val hexOnly = Regex("^[0-9A-F]+$")
         val messages = mutableListOf<List<Int>>()
@@ -78,24 +114,6 @@ object Dtc {
             val bytes = toBytes(multi.toString())
             messages += expected?.let { bytes.take(it) } ?: bytes
         }
-
-        if (messages.isEmpty()) {
-            // "NO DATA" = la centralina non ha niente da dire = nessun codice
-            return if (lines.any { it.contains("NO DATA") }) emptyList() else null
-        }
-
-        val codes = linkedSetOf<String>()
-        for (m in messages) {
-            if (m.firstOrNull() != responseByte) continue
-            var rest = m.drop(1)
-            if (rest.size % 2 == 1) rest = rest.drop(1) // primo byte = numero di codici
-            for (i in 0 until rest.size / 2) {
-                val b1 = rest[2 * i]
-                val b2 = rest[2 * i + 1]
-                if (b1 == 0 && b2 == 0) continue
-                codes += decode(b1, b2)
-            }
-        }
-        return codes.toList()
+        return messages
     }
 }

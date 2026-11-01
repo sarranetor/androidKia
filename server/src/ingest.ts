@@ -92,6 +92,16 @@ export function buildStatement(ev: unknown): Stmt | string {
               .slice(0, 20)
               .map((m) => ({ name: m.name, complete: m.complete }))
           : null,
+        // test della centralina (modo 06): numeri grezzi con i loro limiti
+        monitorTests: Array.isArray(ev.monitorTests)
+          ? ev.monitorTests
+              .filter((m): m is Obj => isObj(m) && isStr(m.name, 60) && isNum(m.tid) && isNum(m.value) && isNum(m.min) && isNum(m.max))
+              .slice(0, 20)
+              .map((m) => ({
+                name: m.name, tid: m.tid, value: m.value, min: m.min, max: m.max,
+                passed: typeof m.passed === "boolean" ? m.passed : null,
+              }))
+          : null,
         ts: ev.ts,
       };
       return {

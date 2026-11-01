@@ -6,10 +6,12 @@ import kotlin.math.sin
 /**
  * ELM327 finto, per sviluppare senza auto. Simula una benzina senza MAF (come la Cee'd).
  * Scenario: 0–8 s quadro acceso e motore spento, 8–16 s minimo da fermo, poi marcia con valori
- * che oscillano. C'è un codice errore (P0133) che sparisce dopo "04".
+ * che oscillano. C'è un codice errore (P0133) che sparisce dopo "04". Con [newCodeAfterSec] compare
+ * anche un codice pendente nuovo (P0300), per provare gli avvisi.
  */
 class SimulatedTransport(
     private val latencyMs: Long = 30,
+    private val newCodeAfterSec: Int? = null,
     private val clock: () -> Long = System::currentTimeMillis,
 ) : Transport {
     private val startMs = clock()
@@ -35,8 +37,14 @@ class SimulatedTransport(
             c == "ATRV" -> "%.1fV".format(java.util.Locale.US, if (t < 8) 12.2 else 13.8 + 0.3 * sin(t / 7))
             c.startsWith("AT") -> "OK"
             c == "03" -> if (cleared) "43 00" else "43 01 01 33"
-            c == "07" -> "47 00"
+            c == "07" -> if (newCodeAfterSec != null && t >= newCodeAfterSec) "47 01 03 00" else "47 00"
             c == "04" -> { cleared = true; "44" }
+            c == "0600" -> maskResponse(0x00, setOf(0x01, 0x02, 0x21)).replaceFirst("41 00", "46 00")
+            c == "0620" -> maskResponse(0x20, setOf(0x21)).replaceFirst("41 20", "46 20")
+            c == "0601" -> "46 01 01 0A 02 58 00 C8 03 20"
+            c == "0602" -> "46 02 01 0A 02 BC 01 F4 03 E8"
+            // su due frame, come farebbe una centralina CAN con due test
+            c == "0621" -> "013\r0:46 21 A0 0A 00 96\r1:00 00 01 2C 21 A1 0A\r2:00 00 00 00 00 00 00"
             // 6 caratteri = modo 02 (freeze frame): 02 + PID + frame
             c.length == 6 && c.startsWith("02") -> mode02(c.substring(2, 4).toInt(16))
             // 5 caratteri = suffisso "risposte attese" (es. 010C1)

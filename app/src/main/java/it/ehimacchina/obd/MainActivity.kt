@@ -360,6 +360,10 @@ class MainActivity : ComponentActivity() {
                     onClick = onDiagnosis,
                 )
             }
+            ui.codeAlert?.let { news ->
+                Banner("${news.title}. ${news.body}", Palette.Crit, onClick = onDiagnosis)
+                TextButton(onClick = { ObdEngine.dismissCodeAlert() }) { Text("OK, ho letto") }
+            }
             alerts.forEach {
                 Banner(it.text, if (it.level == Level.CRIT) Palette.Crit else Palette.Warn, onClick = onDiagnosis)
             }
@@ -469,6 +473,19 @@ class MainActivity : ComponentActivity() {
                 }
 
                 d.readiness?.let { r -> SectionCard("Monitor di prontezza") { ReadinessList(r) } }
+
+                d.monitorTests?.let { tests ->
+                    SectionCard("Test della centralina") {
+                        tests.forEach { t ->
+                            KeyValueRow(
+                                t.name, t.outcome,
+                                when (t.passed) { true -> Palette.Ok; false -> Palette.Crit; null -> Palette.Muted },
+                            )
+                            Hint("Test %02X · %s".format(t.tid, t.detail))
+                        }
+                        Hint("Numeri grezzi della centralina (modo 06), confrontabili solo con i loro limiti.")
+                    }
+                }
             }
 
             SectionCard("Storico codici") {
@@ -483,7 +500,7 @@ class MainActivity : ComponentActivity() {
                             Spacer(Modifier.width(10.dp))
                             if (h.simulated) { SimBadge(); Spacer(Modifier.width(8.dp)) }
                             Text(
-                                if (h.clearedMs == null) h.kind else "cancellato " + fmt.format(Date(h.clearedMs)),
+                                if (h.clearedMs == null) h.kind.replace("+", " e ") else "non più presente dal " + fmt.format(Date(h.clearedMs)),
                                 style = MaterialTheme.typography.bodySmall, color = Palette.Muted,
                             )
                         }
@@ -792,7 +809,7 @@ class MainActivity : ComponentActivity() {
                     ) { Text("Invia storico") }
                 }
                 Hint(
-                    "«Invia storico» manda viaggi, codici e rapporti già presenti nell'app, anche quelli nati col simulatore: " +
+                    "«Invia storico» manda viaggi, codici e rapporti già presenti nell'app (mai quelli del simulatore): " +
                         "usalo solo quando nell'app ci sono dati veri dell'auto. Si può ripetere senza creare doppioni.",
                 )
             }
